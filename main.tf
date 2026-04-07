@@ -42,13 +42,12 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- SEGURIDAD (NSG) CON REGLAS DE SALIDA ---
+# --- SEGURIDAD (NSG) ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
-  # INBOUND: Acceso desde internet y gestión
   security_rule {
     name                       = "AllowManagement"
     priority                   = 100
@@ -73,9 +72,8 @@ resource "azurerm_network_security_group" "apim_nsg" {
     destination_address_prefix = "VirtualNetwork"
   }
 
-  # OUTBOUND: ESTO SOLUCIONA EL ERROR 500 (Permitir hablar con AKS y SQL)
   security_rule {
-    name                       = "AllowAPIMtoAKS-Out"
+    name                       = "AllowOutboundToAKS"
     priority                   = 120
     direction                  = "Outbound"
     access                     = "Allow"
@@ -84,18 +82,6 @@ resource "azurerm_network_security_group" "apim_nsg" {
     destination_port_range     = "80"
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "10.0.1.0/24"
-  }
-
-  security_rule {
-    name                       = "AllowSQL-Out"
-    priority                   = 130
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "1433"
-    source_address_prefix      = "VirtualNetwork"
-    destination_address_prefix = "Sql"
   }
 }
 
@@ -140,29 +126,6 @@ resource "azurerm_role_assignment" "aks_kubelet_network" {
   principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
 }
 
-# --- SQL SERVER ---
-resource "azurerm_mssql_server" "sql" {
-  name                         = var.sql_server_name
-  resource_group_name          = azurerm_resource_group.rg.name
-  location                     = azurerm_resource_group.rg.location
-  version                      = "12.0"
-  administrator_login          = "sqladmin"
-  administrator_login_password = var.db_password
-}
-
-resource "azurerm_mssql_database" "db" {
-  name      = "SupportDB"
-  server_id = azurerm_mssql_server.sql.id
-  sku_name  = "Basic"
-}
-
-resource "azurerm_mssql_firewall_rule" "allow_azure" {
-  name             = "AllowAzureServices"
-  server_id        = azurerm_mssql_server.sql.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
-}
-
 # --- APIM (v9) ---
 resource "azurerm_api_management" "apim" {
   name                = "apimcarlos69lmv9" 
@@ -180,6 +143,20 @@ resource "azurerm_api_management" "apim" {
   depends_on = [azurerm_subnet_network_security_group_association.assoc]
 }
 
+# --- BACKEND EXPLÍCITO (ELIMINA EL ERROR 500) ---
+resource "azurerm_api_management_backend" "aks_backend" {
+  name                = "aks-backend"
+  resource_group_name = azurerm_resource_group.rg.name
+  api_management_name = azurerm_api_management.apim.name
+  protocol            = "http"
+  url                 = "http://10.0.1.34/tickets" # IP detectada previamente
+
+  tls {
+    validate_certificate_chain = false
+    validate_certificate_name  = false
+  }
+}
+
 resource "azurerm_api_management_api" "api" {
   name                = "tickets-api"
   resource_group_name = azurerm_resource_group.rg.name
@@ -190,7 +167,7 @@ resource "azurerm_api_management_api" "api" {
   protocols           = ["https"]
 }
 
-# OPERACIONES APIM
+# OPERACIONES
 resource "azurerm_api_management_api_operation" "get_tickets" {
   operation_id        = "get-tickets"
   api_name            = azurerm_api_management_api.api.name
@@ -201,24 +178,36 @@ resource "azurerm_api_management_api_operation" "get_tickets" {
   url_template        = "/" 
 }
 
-resource "azurerm_api_management_api_operation" "post_tickets" {
-  operation_id        = "post-tickets"
+# POLÍTICA DE BACKEND (OBLIGA A LA API A USAR EL BACKEND SEGURO)
+resource "azurerm_api_management_api_policy" "api_policy" {
   api_name            = azurerm_api_management_api.api.name
   api_management_name = azurerm_api_management.apim.name
   resource_group_name = azurerm_resource_group.rg.name
-  display_name        = "Create Ticket"
-  method              = "POST"
-  url_template        = "/api/tickets" 
+
+  xml_content = <<XML
+<policies>
+    <inbound>
+        <base />
+        <set-backend-service backend-id="${azurerm_api_management_backend.aks_backend.name}" />
+    </inbound>
+</policies>
+XML
 }
 
-resource "azurerm_api_management_api_operation" "wildcard" {
-  operation_id        = "wildcard"
-  api_name            = azurerm_api_management_api.api.name
-  api_management_name = azurerm_api_management.apim.name
-  resource_group_name = azurerm_resource_group.rg.name
-  display_name        = "Static"
-  method              = "GET"
-  url_template        = "/*" 
+# --- OTROS RECURSOS ---
+resource "azurerm_mssql_server" "sql" {
+  name                         = var.sql_server_name
+  resource_group_name          = azurerm_resource_group.rg.name
+  location                     = azurerm_resource_group.rg.location
+  version                      = "12.0"
+  administrator_login          = "sqladmin"
+  administrator_login_password = var.db_password
+}
+
+resource "azurerm_mssql_database" "db" {
+  name      = "SupportDB"
+  server_id = azurerm_mssql_server.sql.id
+  sku_name  = "Basic"
 }
 
 resource "azurerm_container_registry" "acr" {

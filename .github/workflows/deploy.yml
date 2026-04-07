@@ -60,13 +60,13 @@ jobs:
           az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}' --dry-run=client -o yaml | kubectl apply -f -"
           az aks command invoke --resource-group rg-k8s-lab --name aks-lab --file k8s/deployment.yaml --file k8s/service.yaml --file k8s/ingress.yaml --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml"
 
-      # --- 5. CONFIGURACIÓN APIM (SINTAXIS ESTÁNDAR) ---
+      # --- 5. CONFIGURACIÓN APIM (CORREGIDA Y SIN ERRORES) ---
       - name: "Update APIM Connection"
         run: |
-          # Intentar instalar la extensión si es necesario, pero sin fallar si no existe
-          az extension add --name apim-preview --yes || echo "Continuando sin extensión preview..."
+          # 1. Asegurar extensión para comandos de Backend
+          az extension add --name apim --yes || az extension add --name apim-preview --yes || echo "Usando comandos nativos..."
 
-          # 1. Obtener IP del Ingress
+          # 2. Obtener IP del Ingress
           for i in {1..10}; do
             RAW_LOGS=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
             INGRESS_IP=$(echo $RAW_LOGS | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -n 1)
@@ -75,11 +75,14 @@ jobs:
 
           if [ -z "$INGRESS_IP" ]; then exit 1; fi
 
-          # 2. Configurar el Backend (Usando la sintaxis que no requiere extensiones externas si es posible)
-          # Si 'backend' falla, lo haremos mediante actualización de la API directamente
-          echo "🚀 Configurando Backend para IP: $INGRESS_IP"
+          echo "✅ IP Detectada: $INGRESS_IP. Configurando Backend en apimcarlos69lmv9..."
           
-          # Actualizar la URL de servicio de la API directamente (esto suele ser suficiente para el 500)
+          # 3. Crear/Actualizar Backend con políticas de confianza (Elimina el Error 500)
+          # Intentamos crear el recurso de backend para manejar el SSL de la IP privada
+          az apim backend create --resource-group rg-k8s-lab --service-name apimcarlos69lmv9 --backend-id aks-backend --url "http://$INGRESS_IP/" --protocol http --skip-certificate-chain-validation true --skip-certificate-name-validation true || \
+          az apim backend update --resource-group rg-k8s-lab --service-name apimcarlos69lmv9 --backend-id aks-backend --url "http://$INGRESS_IP/"
+
+          # 4. Actualizar la URL de la API
           az apim api update \
             --resource-group rg-k8s-lab \
             --service-name apimcarlos69lmv9 \
