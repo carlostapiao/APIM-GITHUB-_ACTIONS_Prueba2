@@ -2,11 +2,12 @@ terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 3.0" }
   }
+  # CAMBIO DE KEY: Para forzar un estado nuevo y limpio
   backend "azurerm" {
     resource_group_name  = "rg-apppersonal-tfstate"
     storage_account_name = "stcarlosv3state"
     container_name       = "tfstate-apppersonal"
-    key                  = "tfstate.v10" 
+    key                  = "tfstatev1" 
   }
 }
 
@@ -21,7 +22,7 @@ resource "azurerm_resource_group" "rg" {
   location = "centralus" 
 }
 
-# --- 2. Redes ---
+# --- 2. Redes (VNET y Subnets) ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -43,7 +44,7 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. Seguridad (NSG para APIM) ---
+# --- 3. Seguridad (NSG para el APIM) ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
@@ -112,7 +113,7 @@ resource "azurerm_role_assignment" "aks_acr" {
   skip_service_principal_aad_check = true
 }
 
-# --- 6. SQL Server ---
+# --- 6. SQL Server y Base de Datos ---
 resource "azurerm_mssql_server" "sql" {
   name                         = var.sql_server_name
   resource_group_name          = azurerm_resource_group.rg.name
@@ -135,7 +136,7 @@ resource "azurerm_mssql_firewall_rule" "allow_azure" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 7. APIM ---
+# --- 7. API Management (APIM) con Dependencias Reforzadas ---
 resource "azurerm_api_management" "apim" {
   name                = var.apim_name
   location            = azurerm_resource_group.rg.location
@@ -149,7 +150,12 @@ resource "azurerm_api_management" "apim" {
     subnet_id = azurerm_subnet.apim_subnet.id
   }
 
-  depends_on = [azurerm_subnet_network_security_group_association.assoc]
+  # ESTO EVITA EL ERROR DE "VNET NOT FOUND":
+  depends_on = [
+    azurerm_virtual_network.vnet,
+    azurerm_subnet.apim_subnet,
+    azurerm_subnet_network_security_group_association.assoc
+  ]
 }
 
 resource "azurerm_api_management_api" "api" {
@@ -162,7 +168,7 @@ resource "azurerm_api_management_api" "api" {
   protocols           = ["https"]
 }
 
-# --- 8. Container Registry ---
+# --- 8. Container Registry (ACR) ---
 resource "azurerm_container_registry" "acr" {
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.rg.name

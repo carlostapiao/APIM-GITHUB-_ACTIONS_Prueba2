@@ -24,7 +24,7 @@ variable "aks_name" {
 variable "apim_name" {
   description = "Nombre del servicio APIM"
   type        = string
-  default     = "apimcarlos69lmv8"
+  default     = "apimcarlos69lmv9"
 }
 
 variable "acr_name" {
