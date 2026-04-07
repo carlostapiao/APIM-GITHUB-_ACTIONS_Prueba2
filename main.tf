@@ -22,7 +22,7 @@ resource "azurerm_resource_group" "rg" {
   location = var.location
 }
 
-# --- 2. Redes (VNET y Subnets) ---
+# --- 2. Redes (VNET y Subnets corregidas) ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -37,7 +37,6 @@ resource "azurerm_subnet" "aks_subnet" {
   address_prefixes     = ["10.0.1.0/24"]
 }
 
-# Subred para APIM (Solo si usas SKU Developer/Premium para integración total)
 resource "azurerm_subnet" "apim_subnet" {
   name                 = "snet-apim"
   resource_group_name  = azurerm_resource_group.rg.name
@@ -60,13 +59,13 @@ resource "azurerm_kubernetes_cluster" "aks" {
   location                = azurerm_resource_group.rg.location
   resource_group_name     = azurerm_resource_group.rg.name
   dns_prefix              = "aks-tickets-priv"
-  private_cluster_enabled = true # HACE EL CLUSTER PRIVADO
+  private_cluster_enabled = true 
 
   default_node_pool {
     name           = "default"
     node_count     = 1
     vm_size        = "Standard_DC2s_v3"
-    vnet_subnet_id = azurerm_subnet.aks_subnet.id # ASOCIAR A LA RED
+    vnet_subnet_id = azurerm_subnet.aks_subnet.id
   }
 
   identity { type = "SystemAssigned" }
@@ -74,6 +73,11 @@ resource "azurerm_kubernetes_cluster" "aks" {
   network_profile {
     network_plugin    = "azure"
     load_balancer_sku = "standard"
+    
+    # SOLUCIÓN AL ERROR DE OVERLAP: Rango fuera de 10.0.x.x
+    service_cidr       = "10.1.0.0/16" 
+    dns_service_ip     = "10.1.0.10"
+    docker_bridge_cidr = "172.17.0.1/16"
   }
 }
 
@@ -108,30 +112,33 @@ resource "azurerm_mssql_firewall_rule" "sql_fw" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 7. API Management (APIM) ---
+# --- 7. API Management (APIM con Lifecycle corregido) ---
 resource "azurerm_api_management" "apim" {
   name                = var.apim_name
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   publisher_name      = "Carlos Tapia"
   publisher_email     = "carlos@example.com"
-  
-  # Cambiamos a Developer para permitir integración con VNET
-  sku_name = "Developer_1" 
+  sku_name            = "Developer_1"
 
-  # El APIM tendrá una IP pública para que TÚ accedas, 
-  # pero podrá hablar con el AKS por la red interna.
   virtual_network_type = "External"
   virtual_network_configuration {
     subnet_id = azurerm_subnet.apim_subnet.id
   }
 
+  # SOLUCIÓN AL ERROR DE SKU: Ignora propiedades de seguridad avanzadas
+  lifecycle {
+    ignore_changes = [
+      security,
+      hostname_configuration
+    ]
+  }
+
   timeouts {
-    create = "45m" # APIM en VNET tarda más en desplegar
+    create = "45m"
   }
 }
 
-# Configuración de la API en APIM
 resource "azurerm_api_management_api" "api" {
   name                = "tickets-api"
   resource_group_name = azurerm_resource_group.rg.name
@@ -142,7 +149,6 @@ resource "azurerm_api_management_api" "api" {
   protocols           = ["http", "https"]
 }
 
-# Operaciones de la API (Iguales a tu versión anterior)
 resource "azurerm_api_management_api_operation" "get_tickets" {
   operation_id        = "get-tickets-api"
   api_name            = azurerm_api_management_api.api.name
@@ -163,11 +169,9 @@ resource "azurerm_api_management_api_operation" "post_ticket" {
   url_template        = "/api/tickets"
 }
 
-# --- 8. Helm Ingress Nginx (CONFIGURACIÓN INTERNA) ---
+# --- 8. Helm Ingress Nginx (Configuración Interna) ---
 provider "helm" {
   kubernetes {
-    # Como el cluster es privado, Helm debe correr desde un runner que tenga acceso o via proxy.
-    # Para el despliegue inicial, Terraform usará las credenciales de Azure.
     host                   = azurerm_kubernetes_cluster.aks.kube_config.0.host
     client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_certificate)
     client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_key)
@@ -182,7 +186,6 @@ resource "helm_release" "nginx" {
   namespace        = "ingress-basic"
   create_namespace = true
 
-  # ESTO ES LO QUE HACE QUE EL INGRESS SEA PRIVADO
   set {
     name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-internal"
     value = "true"
