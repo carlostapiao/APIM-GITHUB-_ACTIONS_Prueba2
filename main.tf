@@ -6,7 +6,7 @@ terraform {
     resource_group_name  = "rg-apppersonal-tfstate"
     storage_account_name = "stcarlosv3state"
     container_name       = "tfstate-apppersonal"
-    key                  = "tfstate.v7" # Cambiado a v8 para limpieza total
+    key                  = "tfstate.v7"
   }
 }
 
@@ -15,13 +15,13 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-# --- 1. RECURSO BASE (Obligatorio para que lo demás funcione) ---
+# --- 1. Grupo de Recursos ---
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
 }
 
-# --- 2. REDES ---
+# --- 2. Redes Privadas ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -43,7 +43,7 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. SEGURIDAD APIM (NSG) ---
+# --- 3. Seguridad APIM (NSG) ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
@@ -91,15 +91,7 @@ resource "azurerm_subnet_network_security_group_association" "apim_nsg_assoc" {
   network_security_group_id = azurerm_network_security_group.apim_nsg.id
 }
 
-# --- 4. CONTENEDORES (ACR Y AKS) ---
-resource "azurerm_container_registry" "acr" {
-  name                = var.acr_name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-  sku                 = "Basic"
-  admin_enabled       = true
-}
-
+# --- 4. Clúster AKS (Privado) ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -124,7 +116,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
-# --- 5. ROLES Y PERMISOS ---
+# --- 5. Roles y Permisos ---
 resource "azurerm_role_assignment" "aks_acr_final" {
   principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   role_definition_name             = "AcrPull"
@@ -138,7 +130,7 @@ resource "azurerm_role_assignment" "aks_network" {
   principal_id         = azurerm_kubernetes_cluster.aks.identity[0].principal_id
 }
 
-# --- 6. BASE DE DATOS ---
+# --- 6. Base de Datos SQL ---
 resource "azurerm_mssql_server" "sql" {
   name                         = var.sql_server_name
   resource_group_name          = azurerm_resource_group.rg.name
@@ -161,7 +153,7 @@ resource "azurerm_mssql_firewall_rule" "sql_fw" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 7. API MANAGEMENT (v8) ---
+# --- 7. APIM v8 (Configuración y Política) ---
 resource "azurerm_api_management" "apim" {
   name                = var.apim_name
   location            = azurerm_resource_group.rg.location
@@ -192,6 +184,23 @@ resource "azurerm_api_management_api" "api" {
   protocols           = ["http", "https"]
 }
 
+# Política Definitiva: Limpia la ruta para que cargue el frontend azul
+resource "azurerm_api_management_api_policy" "api_policy" {
+  api_name            = azurerm_api_management_api.api.name
+  api_management_name = azurerm_api_management.apim.name
+  resource_group_name = azurerm_resource_group.rg.name
+
+  xml_content = <<XML
+<policies>
+    <inbound>
+        <base />
+        <rewrite-uri template="/" copy-unconsumed-params="true" />
+    </inbound>
+</policies>
+XML
+}
+
+# Operaciones de la API
 resource "azurerm_api_management_api_operation" "get_tickets" {
   operation_id        = "get-tickets-api"
   api_name            = azurerm_api_management_api.api.name
@@ -212,27 +221,10 @@ resource "azurerm_api_management_api_operation" "post_ticket" {
   url_template        = "/api/tickets"
 }
 
-# Añade esto al final de tu main.tf
-resource "azurerm_api_management_api_policy" "api_policy" {
-  api_name            = azurerm_api_management_api.api.name
-  api_management_name = azurerm_api_management.apim.name
+resource "azurerm_container_registry" "acr" {
+  name                = var.acr_name
   resource_group_name = azurerm_resource_group.rg.name
-
-  xml_content = <<XML
-<policies>
-    <inbound>
-        <base />
-        <rewrite-uri template="@(context.Request.Url.Path.Replace('/tickets', ''))" copy-unconsumed-params="true" />
-    </inbound>
-    <backend>
-        <base />
-    </backend>
-    <outbound>
-        <base />
-    </outbound>
-    <on-error>
-        <base />
-    </on-error>
-</policies>
-XML
+  location            = azurerm_resource_group.rg.location
+  sku                 = "Basic"
+  admin_enabled       = true
 }
