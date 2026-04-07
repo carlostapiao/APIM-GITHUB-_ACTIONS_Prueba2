@@ -118,6 +118,6 @@ jobs:
           echo "🚀 Actualizando Backend del APIM con la IP detectada..."
           az apim api update \
             --resource-group rg-k8s-lab \
-            --service-name apimcarlos69lmv8 \
+            --service-name apimcarlos69lmv9 \
             --api-id tickets-api \
             --service-url "http://$INGRESS_IP/tickets"
