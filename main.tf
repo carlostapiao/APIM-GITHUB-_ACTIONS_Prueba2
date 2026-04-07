@@ -172,6 +172,7 @@ resource "azurerm_api_management_api" "api" {
 }
 
 # Vinculamos la API al backend configurado arriba mediante una política
+# MODIFICACIÓN EN LA POLÍTICA (main.tf)
 resource "azurerm_api_management_api_policy" "api_policy" {
   api_name            = azurerm_api_management_api.api.name
   api_management_name = azurerm_api_management.apim.name
@@ -181,6 +182,10 @@ resource "azurerm_api_management_api_policy" "api_policy" {
 <policies>
     <inbound>
         <base />
+        <!-- ESTA LÍNEA ES LA MAGIA: Limpia el Host para que el AKS no se confunda -->
+        <set-header name="Host" exists-action="override">
+            <value>@(context.Request.Url.Host)</value> 
+        </set-header>
         <set-backend-service backend-id="${azurerm_api_management_backend.aks_backend.name}" />
     </inbound>
 </policies>
