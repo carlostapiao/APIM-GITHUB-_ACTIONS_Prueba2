@@ -2,7 +2,6 @@ terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 3.0" }
   }
-  # --- BLOQUE DE BACKEND FIJO (NO CAMBIAR) ---
   backend "azurerm" {
     resource_group_name  = "rg-apppersonal-tfstate"
     storage_account_name = "stcarlosv3state"
@@ -16,13 +15,12 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-# --- 1. GRUPO DE RECURSOS ---
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = "centralus" 
 }
 
-# --- 2. REDES (VNET Y SUBNETS) ---
+# --- REDES ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -44,14 +42,15 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. SEGURIDAD (NSG PARA EL APIM) ---
+# --- SEGURIDAD (NSG) CON REGLAS DE SALIDA ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
+  # INBOUND: Acceso desde internet y gestión
   security_rule {
-    name                       = "AllowManagementEndpoint"
+    name                       = "AllowManagement"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
@@ -63,7 +62,7 @@ resource "azurerm_network_security_group" "apim_nsg" {
   }
 
   security_rule {
-    name                       = "AllowHTTPSInbound"
+    name                       = "AllowHTTPS"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
@@ -73,6 +72,31 @@ resource "azurerm_network_security_group" "apim_nsg" {
     source_address_prefix      = "Internet"
     destination_address_prefix = "VirtualNetwork"
   }
+
+  # OUTBOUND: ESTO SOLUCIONA EL ERROR 500 (Permitir hablar con AKS y SQL)
+  security_rule {
+    name                       = "AllowAPIMtoAKS-Out"
+    priority                   = 120
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "10.0.1.0/24"
+  }
+
+  security_rule {
+    name                       = "AllowSQL-Out"
+    priority                   = 130
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "1433"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "Sql"
+  }
 }
 
 resource "azurerm_subnet_network_security_group_association" "assoc" {
@@ -80,7 +104,7 @@ resource "azurerm_subnet_network_security_group_association" "assoc" {
   network_security_group_id = azurerm_network_security_group.apim_nsg.id
 }
 
-# --- 4. AKS (CLÚSTER PRIVADO) ---
+# --- AKS PRIVADO ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -103,7 +127,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
-# --- 5. ROLES DE RED (ESTO ARREGLÓ LA IP PRIVADA) ---
+# --- ROLES DE RED ---
 resource "azurerm_role_assignment" "aks_network" {
   scope                = azurerm_resource_group.rg.id
   role_definition_name = "Network Contributor"
@@ -116,7 +140,7 @@ resource "azurerm_role_assignment" "aks_kubelet_network" {
   principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
 }
 
-# --- 6. SQL SERVER Y BASE DE DATOS ---
+# --- SQL SERVER ---
 resource "azurerm_mssql_server" "sql" {
   name                         = var.sql_server_name
   resource_group_name          = azurerm_resource_group.rg.name
@@ -139,7 +163,7 @@ resource "azurerm_mssql_firewall_rule" "allow_azure" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 7. API MANAGEMENT (APIM v9) ---
+# --- APIM (v9) ---
 resource "azurerm_api_management" "apim" {
   name                = "apimcarlos69lmv9" 
   location            = azurerm_resource_group.rg.location
@@ -166,13 +190,13 @@ resource "azurerm_api_management_api" "api" {
   protocols           = ["https"]
 }
 
-# OPERACIONES PARA EVITAR EL ERROR 404
+# OPERACIONES APIM
 resource "azurerm_api_management_api_operation" "get_tickets" {
   operation_id        = "get-tickets"
   api_name            = azurerm_api_management_api.api.name
   api_management_name = azurerm_api_management.apim.name
   resource_group_name = azurerm_resource_group.rg.name
-  display_name        = "Get Tickets and Web"
+  display_name        = "Get Tickets"
   method              = "GET"
   url_template        = "/" 
 }
@@ -188,16 +212,15 @@ resource "azurerm_api_management_api_operation" "post_tickets" {
 }
 
 resource "azurerm_api_management_api_operation" "wildcard" {
-  operation_id        = "wildcard-operation"
+  operation_id        = "wildcard"
   api_name            = azurerm_api_management_api.api.name
   api_management_name = azurerm_api_management.apim.name
   resource_group_name = azurerm_resource_group.rg.name
-  display_name        = "Static Files"
+  display_name        = "Static"
   method              = "GET"
   url_template        = "/*" 
 }
 
-# --- 8. CONTAINER REGISTRY (ACR) ---
 resource "azurerm_container_registry" "acr" {
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.rg.name
