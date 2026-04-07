@@ -18,14 +18,12 @@ jobs:
       - name: "Checkout Code"
         uses: actions/checkout@v3
 
-      # --- 1. INFRAESTRUCTURA ---
       - name: "Setup Terraform"
         uses: hashicorp/setup-terraform@v2
       - run: |
           terraform init
           terraform apply -auto-approve -var="subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" -var="db_password=${{ secrets.DB_PASSWORD }}"
 
-      # --- 2. LOGIN & DOCKER ---
       - name: "Azure Login"
         uses: azure/login@v1
         with:
@@ -37,14 +35,10 @@ jobs:
           docker build -t acrcarlos69lmv8.azurecr.io/support-app:latest ./app
           docker push acrcarlos69lmv8.azurecr.io/support-app:latest
 
-      # --- 3. SQL ---
       - name: "Create SQL Script File"
         run: |
           mkdir -p scripts
-          echo "IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Tickets')
-          BEGIN
-              CREATE TABLE Tickets (id INT IDENTITY(1,1) PRIMARY KEY, usuario VARCHAR(100), asunto VARCHAR(255), prioridad VARCHAR(20), estado VARCHAR(20) DEFAULT 'Abierto');
-          END" > ./scripts/init.sql
+          echo "IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Tickets') BEGIN CREATE TABLE Tickets (id INT IDENTITY(1,1) PRIMARY KEY, usuario VARCHAR(100), asunto VARCHAR(255), prioridad VARCHAR(20), estado VARCHAR(20) DEFAULT 'Abierto'); END" > ./scripts/init.sql
 
       - name: "Setup Database Table"
         uses: azure/sql-action@v2
@@ -53,20 +47,15 @@ jobs:
           path: "./scripts/init.sql"
           action: "Execute"
 
-      # --- 4. AKS ---
       - name: "Deploy to Private AKS"
         run: |
           az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update && helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-nginx --create-namespace --set controller.service.annotations.\"service\.beta\.kubernetes\.io/azure-load-balancer-internal\"=\"true\""
           az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}' --dry-run=client -o yaml | kubectl apply -f -"
           az aks command invoke --resource-group rg-k8s-lab --name aks-lab --file k8s/deployment.yaml --file k8s/service.yaml --file k8s/ingress.yaml --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml"
 
-      # --- 5. CONFIGURACIÓN APIM (CORREGIDA Y SIN ERRORES) ---
       - name: "Update APIM Connection"
         run: |
-          # 1. Asegurar extensión para comandos de Backend
-          az extension add --name apim --yes || az extension add --name apim-preview --yes || echo "Usando comandos nativos..."
-
-          # 2. Obtener IP del Ingress
+          # 1. Obtener IP del Ingress
           for i in {1..10}; do
             RAW_LOGS=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
             INGRESS_IP=$(echo $RAW_LOGS | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -n 1)
@@ -75,14 +64,7 @@ jobs:
 
           if [ -z "$INGRESS_IP" ]; then exit 1; fi
 
-          echo "✅ IP Detectada: $INGRESS_IP. Configurando Backend en apimcarlos69lmv9..."
-          
-          # 3. Crear/Actualizar Backend con políticas de confianza (Elimina el Error 500)
-          # Intentamos crear el recurso de backend para manejar el SSL de la IP privada
-          az apim backend create --resource-group rg-k8s-lab --service-name apimcarlos69lmv9 --backend-id aks-backend --url "http://$INGRESS_IP/" --protocol http --skip-certificate-chain-validation true --skip-certificate-name-validation true || \
-          az apim backend update --resource-group rg-k8s-lab --service-name apimcarlos69lmv9 --backend-id aks-backend --url "http://$INGRESS_IP/"
-
-          # 4. Actualizar la URL de la API
+          # 2. Actualizar la URL de servicio de la API con el comando nativo que SÍ funciona
           az apim api update \
             --resource-group rg-k8s-lab \
             --service-name apimcarlos69lmv9 \
