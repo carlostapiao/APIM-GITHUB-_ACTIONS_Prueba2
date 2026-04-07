@@ -2,6 +2,7 @@ terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 3.0" }
   }
+  # --- BLOQUE DE BACKEND FIJO (NO CAMBIAR) ---
   backend "azurerm" {
     resource_group_name  = "rg-apppersonal-tfstate"
     storage_account_name = "stcarlosv3state"
@@ -15,13 +16,13 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-# --- 1. Grupo de Recursos ---
+# --- 1. GRUPO DE RECURSOS ---
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = "centralus" 
 }
 
-# --- 2. Redes ---
+# --- 2. REDES (VNET Y SUBNETS) ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -43,7 +44,7 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. Seguridad (NSG) ---
+# --- 3. SEGURIDAD (NSG PARA EL APIM) ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
@@ -79,7 +80,7 @@ resource "azurerm_subnet_network_security_group_association" "assoc" {
   network_security_group_id = azurerm_network_security_group.apim_nsg.id
 }
 
-# --- 4. AKS (Privado) ---
+# --- 4. AKS (CLÚSTER PRIVADO) ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -102,7 +103,20 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
-# --- 5. SQL Server ---
+# --- 5. ROLES DE RED (ESTO ARREGLÓ LA IP PRIVADA) ---
+resource "azurerm_role_assignment" "aks_network" {
+  scope                = azurerm_resource_group.rg.id
+  role_definition_name = "Network Contributor"
+  principal_id         = azurerm_kubernetes_cluster.aks.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "aks_kubelet_network" {
+  scope                = azurerm_resource_group.rg.id
+  role_definition_name = "Network Contributor"
+  principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
+}
+
+# --- 6. SQL SERVER Y BASE DE DATOS ---
 resource "azurerm_mssql_server" "sql" {
   name                         = var.sql_server_name
   resource_group_name          = azurerm_resource_group.rg.name
@@ -125,9 +139,9 @@ resource "azurerm_mssql_firewall_rule" "allow_azure" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 6. API Management y Operaciones ---
+# --- 7. API MANAGEMENT (APIM v9) ---
 resource "azurerm_api_management" "apim" {
-  name                = var.apim_name
+  name                = "apimcarlos69lmv9" 
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   publisher_name      = "Carlos Tapia"
@@ -148,11 +162,11 @@ resource "azurerm_api_management_api" "api" {
   api_management_name = azurerm_api_management.apim.name
   revision            = "1"
   display_name        = "IT Support API"
-  path                = "tickets" # Esta es la base /tickets
+  path                = "tickets" 
   protocols           = ["https"]
 }
 
-# OPERACIÓN 1: GET (Para ver la página y listar tickets)
+# OPERACIONES PARA EVITAR EL ERROR 404
 resource "azurerm_api_management_api_operation" "get_tickets" {
   operation_id        = "get-tickets"
   api_name            = azurerm_api_management_api.api.name
@@ -160,10 +174,9 @@ resource "azurerm_api_management_api_operation" "get_tickets" {
   resource_group_name = azurerm_resource_group.rg.name
   display_name        = "Get Tickets and Web"
   method              = "GET"
-  url_template        = "/" # Captura la raíz de /tickets
+  url_template        = "/" 
 }
 
-# OPERACIÓN 2: POST (Para crear tickets)
 resource "azurerm_api_management_api_operation" "post_tickets" {
   operation_id        = "post-tickets"
   api_name            = azurerm_api_management_api.api.name
@@ -171,39 +184,24 @@ resource "azurerm_api_management_api_operation" "post_tickets" {
   resource_group_name = azurerm_resource_group.rg.name
   display_name        = "Create Ticket"
   method              = "POST"
-  url_template        = "/api/tickets" # Para la ruta del backend
+  url_template        = "/api/tickets" 
 }
 
-# OPERACIÓN 3: COMODÍN (Vital para archivos CSS/JS)
 resource "azurerm_api_management_api_operation" "wildcard" {
   operation_id        = "wildcard-operation"
   api_name            = azurerm_api_management_api.api.name
   api_management_name = azurerm_api_management.apim.name
   resource_group_name = azurerm_resource_group.rg.name
-  display_name        = "Static Files and Subroutes"
+  display_name        = "Static Files"
   method              = "GET"
-  url_template        = "/*" # Permite cargar estilos y scripts
+  url_template        = "/*" 
 }
 
-# --- 7. Container Registry ---
+# --- 8. CONTAINER REGISTRY (ACR) ---
 resource "azurerm_container_registry" "acr" {
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   sku                 = "Basic"
   admin_enabled       = true
-}
-
-# --- NUEVO: Permiso para que el AKS pueda crear el Load Balancer Interno ---
-resource "azurerm_role_assignment" "aks_network" {
-  scope                = azurerm_resource_group.rg.id
-  role_definition_name = "Network Contributor"
-  principal_id         = azurerm_kubernetes_cluster.aks.identity[0].principal_id
-}
-
-# También necesitamos permiso para la identidad gestionada del Agente (Kubelet)
-resource "azurerm_role_assignment" "aks_kubelet_network" {
-  scope                = azurerm_resource_group.rg.id
-  role_definition_name = "Network Contributor"
-  principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
 }
