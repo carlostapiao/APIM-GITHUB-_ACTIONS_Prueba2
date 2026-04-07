@@ -15,13 +15,12 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-# --- 1. Grupo de Recursos ---
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
 }
 
-# --- 2. Redes (VNET y Subnets) ---
+# --- Redes ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -43,13 +42,12 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. Seguridad Obligatoria para APIM (NSG) ---
+# --- Seguridad APIM (NSG) ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
-  # Regla necesaria para que Azure pueda gestionar el servicio APIM
   security_rule {
     name                       = "AllowManagementEndpoint"
     priority                   = 100
@@ -68,16 +66,7 @@ resource "azurerm_subnet_network_security_group_association" "apim_nsg_assoc" {
   network_security_group_id = azurerm_network_security_group.apim_nsg.id
 }
 
-# --- 4. Azure Container Registry ---
-resource "azurerm_container_registry" "acr" {
-  name                = var.acr_name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-  sku                 = "Basic"
-  admin_enabled       = true
-}
-
-# --- 5. Azure Kubernetes Service (Privado) ---
+# --- AKS (Privado) ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -102,15 +91,21 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
-# --- 6. Unión AKS + ACR ---
+# --- Otros Recursos ---
+resource "azurerm_container_registry" "acr" {
+  name                = var.acr_name
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  sku                 = "Basic"
+  admin_enabled       = true
+}
+
 resource "azurerm_role_assignment" "aks_acr" {
   principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   role_definition_name             = "AcrPull"
   scope                            = azurerm_container_registry.acr.id
-  skip_service_principal_aad_check = true
 }
 
-# --- 7. SQL Server & Database ---
 resource "azurerm_mssql_server" "sql" {
   name                         = var.sql_server_name
   resource_group_name          = azurerm_resource_group.rg.name
@@ -133,7 +128,7 @@ resource "azurerm_mssql_firewall_rule" "sql_fw" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 8. API Management (APIM con Dependencia de NSG) ---
+# --- APIM v8 ---
 resource "azurerm_api_management" "apim" {
   name                = var.apim_name
   location            = azurerm_resource_group.rg.location
@@ -147,15 +142,10 @@ resource "azurerm_api_management" "apim" {
     subnet_id = azurerm_subnet.apim_subnet.id
   }
 
-  # Forzamos a que espere a la asociación del NSG
   depends_on = [azurerm_subnet_network_security_group_association.apim_nsg_assoc]
 
   lifecycle {
     ignore_changes = [security, hostname_configuration]
-  }
-
-  timeouts {
-    create = "45m"
   }
 }
 

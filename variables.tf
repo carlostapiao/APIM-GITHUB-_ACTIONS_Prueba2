@@ -19,8 +19,7 @@ variable "aks_name" {
 }
 
 variable "apim_name" {
-  default = "apimcarlos69lmv7"
-  
+  default = "apimcarlos69lmv8" 
 }
 
 variable "sql_server_name" {
@@ -28,7 +27,6 @@ variable "sql_server_name" {
 }
 
 variable "db_password" {
-  description = "Password para SQL Server (Se recomienda pasar por variable de entorno en GH Actions)"
-  type        = string
-  sensitive   = true
+  type      = string
+  sensitive = true
 }
