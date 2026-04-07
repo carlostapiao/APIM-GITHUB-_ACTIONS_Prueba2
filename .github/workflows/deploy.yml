@@ -1,4 +1,4 @@
-name: "CI/CD - IT Support System v15"
+name: "CI/CD - IT Support System v16"
 
 on:
   push:
@@ -68,7 +68,7 @@ jobs:
       # --- 4. DESPLIEGUE EN AKS PRIVADO (CON INGRESS AUTO-INSTALL) ---
       - name: "Deploy to Private AKS"
         run: |
-          # A. Instalar Ingress Controller (Necesario para obtener IP privada)
+          # A. Instalar/Actualizar Ingress Controller
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
@@ -80,7 +80,7 @@ jobs:
             --name aks-lab \
             --command "kubectl delete secret sql-secret --ignore-not-found && kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}'"
 
-          # C. Aplicar archivos de Kubernetes (Enviados uno por uno)
+          # C. Aplicar archivos de Kubernetes
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
@@ -89,26 +89,33 @@ jobs:
             --file k8s/ingress.yaml \
             --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml"
 
-      # --- 5. SINCRONIZACIÓN FINAL APIM -> AKS ---
+      # --- 5. SINCRONIZACIÓN FINAL APIM -> AKS (CON REINTENTOS) ---
       - name: "Update APIM Backend with Ingress IP"
         run: |
-          # Esperamos 60 segundos para dar tiempo a Azure a asignar la IP privada al Ingress
-          echo "Esperando asignación de IP privada..."
-          sleep 60 
+          echo "🔍 Buscando IP privada del Ingress..."
           
-          RAW_LOGS=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
-          
-          # Extraer IP de los logs de Azure
-          INGRESS_IP=$(echo $RAW_LOGS | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -n 1)
-          
+          # Intentaremos obtener la IP hasta 10 veces, esperando 30 segundos entre cada una (5 min total)
+          for i in {1..10}; do
+            RAW_LOGS=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
+            
+            # Extraer solo la IP del log
+            INGRESS_IP=$(echo $RAW_LOGS | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -n 1)
+            
+            if [ ! -z "$INGRESS_IP" ]; then
+              echo "✅ IP Detectada: $INGRESS_IP"
+              break
+            fi
+            
+            echo "⚠️ Intento $i: La IP aún no está lista, esperando 30 segundos..."
+            sleep 30
+          done
+
           if [ -z "$INGRESS_IP" ]; then
-            echo "❌ Error: Azure aún no asigna IP al Ingress. Intenta ejecutar de nuevo el job en unos minutos."
+            echo "❌ Error: Azure no asignó la IP privada tras 5 minutos de espera."
             exit 1
           fi
 
-          echo "✅ IP Privada Detectada: $INGRESS_IP. Actualizando APIM..."
-
-          # Actualizamos el Backend del APIM para que apunte al AKS
+          echo "🚀 Actualizando Backend del APIM con la IP detectada..."
           az apim api update \
             --resource-group rg-k8s-lab \
             --service-name apimcarlos69lmv8 \
