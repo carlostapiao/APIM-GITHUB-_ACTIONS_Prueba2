@@ -1,24 +1,23 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: support-ingress
+  name: support-app-ingress
+  namespace: default
   annotations:
-    # IMPORTANTE: Coincide con la clase instalada vía Helm
-    kubernetes.io/ingress.class: "nginx"
-    # Reescribe la ruta para que la app reciba "/" si el APIM manda "/tickets"
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    # Configuración de seguridad y timeouts
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    # Esto limpia el prefijo /tickets para que la app vea la raíz /
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
 spec:
+  ingressClassName: nginx
   rules:
+  output:
   - http:
       paths:
-      - path: /
+      - path: /tickets(/|$)(.*)
         pathType: Prefix
         backend:
           service:
-            name: support-service
+            name: support-app-service
             port:
               number: 80

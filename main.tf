@@ -211,3 +211,21 @@ resource "azurerm_api_management_api_operation" "post_ticket" {
   method              = "POST"
   url_template        = "/api/tickets"
 }
+
+# Añade esto al final de tu main.tf
+resource "azurerm_api_management_api_policy" "api_policy" {
+  api_name            = azurerm_api_management_api.api.name
+  api_management_name = azurerm_api_management.apim.name
+  resource_group_name = azurerm_resource_group.rg.name
+
+  xml_content = <<XML
+<policies>
+    <inbound>
+        <base />
+        <!-- Esto quita el prefijo /tickets antes de mandar la petición al AKS -->
+        <rewrite-uri template="@(context.Request.Url.Path.Replace("/tickets",""))" copy-unconsumed-params="true" />
+        <set-backend-service base-url="http://@{context.Variables["backend-ip"]}@" />
+    </inbound>
+</policies>
+XML
+}
