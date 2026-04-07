@@ -43,7 +43,7 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. Seguridad APIM (NSG) ---
+# --- 3. Seguridad APIM (NSG para acceso Web) ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
@@ -91,7 +91,7 @@ resource "azurerm_subnet_network_security_group_association" "apim_nsg_assoc" {
   network_security_group_id = azurerm_network_security_group.apim_nsg.id
 }
 
-# --- 4. Clúster AKS (Privado) ---
+# --- 4. AKS (Privado) ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -153,7 +153,7 @@ resource "azurerm_mssql_firewall_rule" "sql_fw" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 7. APIM v8 (Configuración y Política) ---
+# --- 7. API Management (Sin políticas conflictivas) ---
 resource "azurerm_api_management" "apim" {
   name                = var.apim_name
   location            = azurerm_resource_group.rg.location
@@ -184,23 +184,6 @@ resource "azurerm_api_management_api" "api" {
   protocols           = ["http", "https"]
 }
 
-# Política Definitiva: Limpia la ruta para que cargue el frontend azul
-resource "azurerm_api_management_api_policy" "api_policy" {
-  api_name            = azurerm_api_management_api.api.name
-  api_management_name = azurerm_api_management.apim.name
-  resource_group_name = azurerm_resource_group.rg.name
-
-  xml_content = <<XML
-<policies>
-    <inbound>
-        <base />
-        <rewrite-uri template="/" copy-unconsumed-params="true" />
-    </inbound>
-</policies>
-XML
-}
-
-# Operaciones de la API
 resource "azurerm_api_management_api_operation" "get_tickets" {
   operation_id        = "get-tickets-api"
   api_name            = azurerm_api_management_api.api.name
