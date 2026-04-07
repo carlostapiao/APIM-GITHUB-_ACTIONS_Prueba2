@@ -222,10 +222,18 @@ resource "azurerm_api_management_api_policy" "api_policy" {
 <policies>
     <inbound>
         <base />
-        <!-- Esto quita el prefijo /tickets antes de mandar la petición al AKS -->
-        <rewrite-uri template="@(context.Request.Url.Path.Replace("/tickets",""))" copy-unconsumed-params="true" />
-        <set-backend-service base-url="http://@{context.Variables["backend-ip"]}@" />
+        <!-- Limpia el prefijo /tickets para que la app reciba la ruta raíz -->
+        <rewrite-uri template="@(context.Request.Url.Path.Replace("/tickets", ""))" copy-unconsumed-params="true" />
     </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
 </policies>
 XML
 }
