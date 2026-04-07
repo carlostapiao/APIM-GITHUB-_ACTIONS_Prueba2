@@ -2,7 +2,6 @@ terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 3.0" }
   }
-  # --- BLOQUE DE BACKEND PARA EL ESTADO ---
   backend "azurerm" {
     resource_group_name  = "rg-apppersonal-tfstate"
     storage_account_name = "stcarlosv3state"
@@ -16,13 +15,12 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-# --- 1. GRUPO DE RECURSOS ---
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = "centralus" 
 }
 
-# --- 2. REDES (VNET Y SUBREDES) ---
+# --- REDES ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -44,14 +42,15 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. SEGURIDAD (NSG) ---
+# --- SEGURIDAD (NSG) - ELIMINANDO EL TIMEOUT DE 20s ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
+  # INBOUND: Acceso al APIM
   security_rule {
-    name                       = "AllowManagementEndpoint"
+    name                       = "AllowManagement"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
@@ -63,7 +62,7 @@ resource "azurerm_network_security_group" "apim_nsg" {
   }
 
   security_rule {
-    name                       = "AllowHTTPSInbound"
+    name                       = "AllowHTTPS"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
@@ -74,17 +73,29 @@ resource "azurerm_network_security_group" "apim_nsg" {
     destination_address_prefix = "VirtualNetwork"
   }
 
-  # Regla de salida para permitir al APIM hablar con el AKS
+  # OUTBOUND: PERMITIR QUE EL APIM HABLE CON EL AKS (SOLUCIÓN TIMEOUT)
   security_rule {
-    name                       = "AllowOutboundToAKS"
-    priority                   = 120
+    name                       = "AllowVnetOutbound"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
+  }
+
+  security_rule {
+    name                       = "AllowAzureCloudOutbound"
+    priority                   = 110
     direction                  = "Outbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "80"
+    destination_port_range     = "443"
     source_address_prefix      = "VirtualNetwork"
-    destination_address_prefix = "10.0.1.0/24"
+    destination_address_prefix = "AzureCloud"
   }
 }
 
@@ -93,7 +104,7 @@ resource "azurerm_subnet_network_security_group_association" "assoc" {
   network_security_group_id = azurerm_network_security_group.apim_nsg.id
 }
 
-# --- 4. AKS (MODO PRIVADO) ---
+# --- AKS PRIVADO ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -116,7 +127,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
-# --- 5. ROLES DE RED ---
+# --- ROLES ---
 resource "azurerm_role_assignment" "aks_network" {
   scope                = azurerm_resource_group.rg.id
   role_definition_name = "Network Contributor"
@@ -129,7 +140,7 @@ resource "azurerm_role_assignment" "aks_kubelet_network" {
   principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
 }
 
-# --- 6. API MANAGEMENT (v9) ---
+# --- APIM (v9) ---
 resource "azurerm_api_management" "apim" {
   name                = "apimcarlos69lmv9" 
   location            = azurerm_resource_group.rg.location
@@ -146,14 +157,13 @@ resource "azurerm_api_management" "apim" {
   depends_on = [azurerm_subnet_network_security_group_association.assoc]
 }
 
-# --- 7. BACKEND Y POLÍTICA (ELIMINA EL ERROR 500) ---
-# Configuramos el backend para que confíe en la IP privada e ignore SSL
+# --- BACKEND (Ignorar SSL) ---
 resource "azurerm_api_management_backend" "aks_backend" {
   name                = "aks-backend"
   resource_group_name = azurerm_resource_group.rg.name
   api_management_name = azurerm_api_management.apim.name
   protocol            = "http"
-  url                 = "http://10.0.1.34/tickets" # IP fija detectada del Ingress
+  url                 = "http://10.0.1.34/tickets" 
 
   tls {
     validate_certificate_chain = false
@@ -171,8 +181,7 @@ resource "azurerm_api_management_api" "api" {
   protocols           = ["https"]
 }
 
-# Vinculamos la API al backend configurado arriba mediante una política
-# MODIFICACIÓN EN LA POLÍTICA (main.tf)
+# POLÍTICA DE CABECERA HOST (EVITA RECHAZO DEL INGRESS)
 resource "azurerm_api_management_api_policy" "api_policy" {
   api_name            = azurerm_api_management_api.api.name
   api_management_name = azurerm_api_management.apim.name
@@ -182,7 +191,6 @@ resource "azurerm_api_management_api_policy" "api_policy" {
 <policies>
     <inbound>
         <base />
-        <!-- ESTA LÍNEA ES LA MAGIA: Limpia el Host para que el AKS no se confunda -->
         <set-header name="Host" exists-action="override">
             <value>@(context.Request.Url.Host)</value> 
         </set-header>
@@ -192,7 +200,6 @@ resource "azurerm_api_management_api_policy" "api_policy" {
 XML
 }
 
-# Operaciones de la API
 resource "azurerm_api_management_api_operation" "get_tickets" {
   operation_id        = "get-tickets"
   api_name            = azurerm_api_management_api.api.name
@@ -203,7 +210,7 @@ resource "azurerm_api_management_api_operation" "get_tickets" {
   url_template        = "/" 
 }
 
-# --- 8. BASE DE DATOS SQL ---
+# --- OTROS ---
 resource "azurerm_mssql_server" "sql" {
   name                         = var.sql_server_name
   resource_group_name          = azurerm_resource_group.rg.name
@@ -219,7 +226,6 @@ resource "azurerm_mssql_database" "db" {
   sku_name  = "Basic"
 }
 
-# --- 9. ACR ---
 resource "azurerm_container_registry" "acr" {
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.rg.name
