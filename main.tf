@@ -94,7 +94,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
 # --- 4. PERMISOS CRÍTICOS (Role Assignments) ---
 
 # Permiso para que AKS pueda sacar imágenes del ACR
-resource "azurerm_role_assignment" "aks_acr" {
+resource "azurerm_role_assignment" "aks_acr_new" {
   principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   role_definition_name             = "AcrPull"
   scope                            = azurerm_container_registry.acr.id
