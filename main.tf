@@ -6,7 +6,7 @@ terraform {
     resource_group_name  = "rg-apppersonal-tfstate"
     storage_account_name = "stcarlosv3state"
     container_name       = "tfstate-apppersonal"
-    key                  = "tfstate.v8" # Cambiado a v8 para limpieza total
+    key                  = "tfstate.v7" # Cambiado a v8 para limpieza total
   }
 }
 
