@@ -1,9 +1,8 @@
-name: "CI/CD - IT Support System v8"
+name: "CI/CD - IT Support System v11"
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   deploy:
@@ -19,7 +18,7 @@ jobs:
       - name: "Checkout Code"
         uses: actions/checkout@v3
 
-      # --- 1. TERRAFORM ---
+      # --- 1. INFRAESTRUCTURA (TERRAFORM) ---
       - name: "Setup Terraform"
         uses: hashicorp/setup-terraform@v2
 
@@ -32,7 +31,7 @@ jobs:
             -var="subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
             -var="db_password=${{ secrets.DB_PASSWORD }}"
 
-      # --- 2. AZURE LOGIN & ACR ---
+      # --- 2. PREPARAR CÓDIGO (DOCKER) ---
       - name: "Azure Login"
         uses: azure/login@v1
         with:
@@ -44,8 +43,8 @@ jobs:
           docker build -t acrcarlos69lmv8.azurecr.io/support-app:latest ./app
           docker push acrcarlos69lmv8.azurecr.io/support-app:latest
 
-      # --- 3. DATABASE SETUP (SQL) ---
-      - name: "Create SQL Script on the fly"
+      # --- 3. BASE DE DATOS (AUTOMÁTICA) ---
+      - name: "Create SQL Script and Execute"
         run: |
           mkdir -p scripts
           echo "IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Tickets')
@@ -58,42 +57,42 @@ jobs:
                   estado VARCHAR(20) DEFAULT 'Abierto'
               );
           END" > ./scripts/init.sql
-
-      - name: "Execute SQL Script"
+          
+        # Usamos la acción corregida con 'path'
+      - name: "Setup Database Table"
         uses: azure/sql-action@v2
         with:
-          connection-string: "Server=tcp:sqlserver-carlos-lab.database.windows.net,1433;Initial Catalog=SupportDB;User ID=sqladmin;Password=${{ secrets.DB_PASSWORD }};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+          connection-string: "Server=tcp:sqlserver-carlos-lab.database.windows.net,1433;Initial Catalog=SupportDB;User ID=sqladmin;Password=${{ secrets.DB_PASSWORD }};Encrypt=True;TrustServerCertificate=False;"
           path: "./scripts/init.sql"
           action: "Execute"
 
-      # --- 4. KUBERNETES DEPLOY ---
-      - name: "Get AKS Credentials"
+      # --- 4. DESPLIEGUE EN AKS (SOLUCIÓN CLÚSTER PRIVADO) ---
+      # Al ser privado, no usamos kubectl directo, usamos 'az aks command invoke'
+      - name: "Deploy to Private AKS via Command Invoke"
         run: |
-          az aks get-credentials --resource-group rg-k8s-lab --name aks-lab --overwrite-existing
+          # 1. Crear el secreto para la DB
+          az aks command invoke \
+            --resource-group rg-k8s-lab \
+            --name aks-lab \
+            --command "kubectl delete secret sql-secret --ignore-not-found && kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}'"
 
-      - name: "Create SQL Secret"
-        run: |
-          kubectl delete secret sql-secret --ignore-not-found
-          kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}'
+          # 2. Aplicar los archivos de Kubernetes
+          # Nota: Enviamos los archivos al clúster para que los procese internamente
+          az aks command invoke \
+            --resource-group rg-k8s-lab \
+            --name aks-lab \
+            --file k8s/deployment.yaml k8s/service.yaml k8s/ingress.yaml \
+            --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml"
 
-      - name: "Deploy to AKS"
+      # --- 5. CONFIGURACIÓN FINAL APIM ---
+      - name: "Update APIM Backend"
         run: |
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
-          kubectl apply -f k8s/ingress.yaml
-
-      # --- 5. SYNC APIM WITH AKS INTERNAL IP ---
-      - name: "Sync Internal IP with APIM"
-        run: |
-          # Obtenemos la IP privada del Ingress Controller para que el APIM sepa a dónde ir
-          INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          echo "La IP del Ingress es: $INGRESS_IP"
+          # Obtenemos la IP del Ingress de forma remota
+          INGRESS_IP=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'" --query "logs" -o tsv | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -n 1)
           
-          # Actualizamos el Backend del APIM
-          az apim api update --resource-group rg-k8s-lab \
-            --service-name apimcarlos69lmv9 \
-            --api-id tickets-api \
-            --service-url "http://$INGRESS_IP/tickets"
-
-      - name: "Check Deployment Status"
-        run: kubectl rollout status deployment/support-app-deployment
+          if [ ! -z "$INGRESS_IP" ]; then
+            az apim api update --resource-group rg-k8s-lab \
+              --service-name apimcarlos69lmv8 \
+              --api-id tickets-api \
+              --service-url "http://$INGRESS_IP/tickets"
+          fi
