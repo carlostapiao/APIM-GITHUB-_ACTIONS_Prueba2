@@ -45,13 +45,26 @@ jobs:
           docker push acrcarlos69lmv8.azurecr.io/support-app:latest
 
       # --- 3. DATABASE SETUP (SQL) ---
-      - name: "Setup Database Table"
+      - name: "Create SQL Script on the fly"
+        run: |
+          mkdir -p scripts
+          echo "IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Tickets')
+          BEGIN
+              CREATE TABLE Tickets (
+                  id INT IDENTITY(1,1) PRIMARY KEY,
+                  usuario VARCHAR(100),
+                  asunto VARCHAR(255),
+                  prioridad VARCHAR(20),
+                  estado VARCHAR(20) DEFAULT 'Abierto'
+              );
+          END" > ./scripts/init.sql
+
+      - name: "Execute SQL Script"
         uses: azure/sql-action@v2
         with:
-          connection-string: "Server=tcp:sqlserver-carlos-lab.database.windows.net,1433;Initial Catalog=SupportDB;Persist Security Info=False;User ID=sqladmin;Password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
-          # Cambiamos 'sql-file' por 'path'
+          connection-string: "Server=tcp:sqlserver-carlos-lab.database.windows.net,1433;Initial Catalog=SupportDB;User ID=sqladmin;Password=${{ secrets.DB_PASSWORD }};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
           path: "./scripts/init.sql"
-          action: "Execute" # Opcional, pero recomendado para v2
+          action: "Execute"
 
       # --- 4. KUBERNETES DEPLOY ---
       - name: "Get AKS Credentials"
