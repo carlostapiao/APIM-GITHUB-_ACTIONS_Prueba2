@@ -1,7 +1,6 @@
 terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 3.0" }
-    helm    = { source = "hashicorp/helm", version = "~> 2.0" }
   }
   backend "azurerm" {
     resource_group_name  = "rg-apppersonal-tfstate"
@@ -22,7 +21,7 @@ resource "azurerm_resource_group" "rg" {
   location = var.location
 }
 
-# --- 2. Redes (VNET y Subnets corregidas) ---
+# --- 2. Redes (VNET y Subnets) ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -44,7 +43,32 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- 3. Azure Container Registry ---
+# --- 3. Seguridad Obligatoria para APIM (NSG) ---
+resource "azurerm_network_security_group" "apim_nsg" {
+  name                = "nsg-apim"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  # Regla necesaria para que Azure pueda gestionar el servicio APIM
+  security_rule {
+    name                       = "AllowManagementEndpoint"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "3443"
+    source_address_prefix      = "ApiManagement"
+    destination_address_prefix = "VirtualNetwork"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "apim_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.apim_subnet.id
+  network_security_group_id = azurerm_network_security_group.apim_nsg.id
+}
+
+# --- 4. Azure Container Registry ---
 resource "azurerm_container_registry" "acr" {
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.rg.name
@@ -53,7 +77,7 @@ resource "azurerm_container_registry" "acr" {
   admin_enabled       = true
 }
 
-# --- 4. Azure Kubernetes Service (PRIVADO) ---
+# --- 5. Azure Kubernetes Service (Privado) ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -73,15 +97,12 @@ resource "azurerm_kubernetes_cluster" "aks" {
   network_profile {
     network_plugin    = "azure"
     load_balancer_sku = "standard"
-    
-    # SOLUCIÓN AL ERROR DE OVERLAP: Rango fuera de 10.0.x.x
-    service_cidr       = "10.1.0.0/16" 
-    dns_service_ip     = "10.1.0.10"
-    docker_bridge_cidr = "172.17.0.1/16"
+    service_cidr      = "10.1.0.0/16" 
+    dns_service_ip    = "10.1.0.10"
   }
 }
 
-# --- 5. Unión AKS + ACR ---
+# --- 6. Unión AKS + ACR ---
 resource "azurerm_role_assignment" "aks_acr" {
   principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   role_definition_name             = "AcrPull"
@@ -89,7 +110,7 @@ resource "azurerm_role_assignment" "aks_acr" {
   skip_service_principal_aad_check = true
 }
 
-# --- 6. SQL Server & Database ---
+# --- 7. SQL Server & Database ---
 resource "azurerm_mssql_server" "sql" {
   name                         = var.sql_server_name
   resource_group_name          = azurerm_resource_group.rg.name
@@ -112,7 +133,7 @@ resource "azurerm_mssql_firewall_rule" "sql_fw" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- 7. API Management (APIM con Lifecycle corregido) ---
+# --- 8. API Management (APIM con Dependencia de NSG) ---
 resource "azurerm_api_management" "apim" {
   name                = var.apim_name
   location            = azurerm_resource_group.rg.location
@@ -126,12 +147,11 @@ resource "azurerm_api_management" "apim" {
     subnet_id = azurerm_subnet.apim_subnet.id
   }
 
-  # SOLUCIÓN AL ERROR DE SKU: Ignora propiedades de seguridad avanzadas
+  # Forzamos a que espere a la asociación del NSG
+  depends_on = [azurerm_subnet_network_security_group_association.apim_nsg_assoc]
+
   lifecycle {
-    ignore_changes = [
-      security,
-      hostname_configuration
-    ]
+    ignore_changes = [security, hostname_configuration]
   }
 
   timeouts {
@@ -167,27 +187,4 @@ resource "azurerm_api_management_api_operation" "post_ticket" {
   display_name        = "Create Ticket"
   method              = "POST"
   url_template        = "/api/tickets"
-}
-
-# --- 8. Helm Ingress Nginx (Configuración Interna) ---
-provider "helm" {
-  kubernetes {
-    host                   = azurerm_kubernetes_cluster.aks.kube_config.0.host
-    client_certificate     = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_certificate)
-    client_key             = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.client_key)
-    cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks.kube_config.0.cluster_ca_certificate)
-  }
-}
-
-resource "helm_release" "nginx" {
-  name             = "ingress-nginx"
-  repository       = "https://kubernetes.github.io/ingress-nginx"
-  chart            = "ingress-nginx"
-  namespace        = "ingress-basic"
-  create_namespace = true
-
-  set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-internal"
-    value = "true"
-  }
 }

@@ -13,10 +13,13 @@ jobs:
       ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: "e690edad-0257-4dec-b4c9-08e163433edb"
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      # Variables de nombres (ajusta según tus variables de Terraform)
-      RG_NAME: "tu-resource-group" # <--- AJUSTAR
-      AKS_NAME: "tu-aks-name"      # <--- AJUSTAR
-      APIM_NAME: "tu-apim-name"    # <--- AJUSTAR
+      
+      # --- AJUSTADO A TUS RECURSOS EXISTENTES ---
+      RG_NAME: "rg-k8s-lab"
+      AKS_NAME: "aks-lab"
+      APIM_NAME: "apimcarlos69lmv7" 
+      # ------------------------------------------
+      
       DB_SERVER_NAME: "sql-server-tickets-carlos"
       DB_NAME: "SupportDB"
       DB_USER: "sqladmin"
@@ -57,44 +60,61 @@ jobs:
           push: true
           tags: acrcarlos69lm.azurecr.io/support-app:${{ github.sha }}
 
-      # 3. Kubernetes (USANDO COMMAND INVOKE POR SER PRIVADO)
+      # 3. Kubernetes (Instalación Interna de Nginx + App)
       - name: Kubernetes Deploy
         run: |
-          # 1. Preparamos los archivos localmente (sed)
+          # 1. Preparar archivos localmente
           sed -i 's|acrcarlos69lm.azurecr.io/support-app:latest|acrcarlos69lm.azurecr.io/support-app:${{ github.sha }}|g' k8s/deployment.yaml
           sed -i 's|TuPasswordSeguro123|${{ secrets.DB_PASSWORD }}|g' k8s/deployment.yaml
           
-          # 2. Ejecutamos el despliegue DESDE Azure hacia el cluster privado
+          # 2. Instalar/Actualizar Ingress Nginx (Interno) vía Command Invoke
+          az aks command invoke \
+            --resource-group ${{ env.RG_NAME }} \
+            --name ${{ env.AKS_NAME }} \
+            --command "helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update && helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-basic --create-namespace --set controller.service.annotations.\"service\.beta\.kubernetes\.io/azure-load-balancer-internal\"=true"
+
+          # 3. Desplegar la Aplicación
           az aks command invoke \
             --resource-group ${{ env.RG_NAME }} \
             --name ${{ env.AKS_NAME }} \
             --command "kubectl apply -f k8s/" \
             --file k8s/
 
-      # 4. Sincronizar IP Privada del Ingress con APIM
+      # 4. Sincronizar IP Privada con APIM (Con reintentos)
       - name: Sync Internal IP with APIM
         run: |
-          # Obtenemos la IP que el Ingress tomó de la red interna
-          RAW_OUTPUT=$(az aks command invoke \
-            --resource-group ${{ env.RG_NAME }} \
-            --name ${{ env.AKS_NAME }} \
-            --command "kubectl get svc -n ingress-basic ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
-          
-          # Extraemos solo la IP del JSON de salida de Azure
-          INTERNAL_IP=$(echo $RAW_OUTPUT | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b")
-          
-          echo "La IP interna del Ingress es: $INTERNAL_IP"
+          echo "Buscando IP privada del Ingress..."
+          INTERNAL_IP=""
+          for i in {1..12}; do
+            RAW_OUTPUT=$(az aks command invoke \
+              --resource-group ${{ env.RG_NAME }} \
+              --name ${{ env.AKS_NAME }} \
+              --command "kubectl get svc -n ingress-basic ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
+            
+            # Extraer IP usando regex
+            INTERNAL_IP=$(echo $RAW_OUTPUT | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" || true)
+            
+            if [ -n "$INTERNAL_IP" ]; then
+              break
+            fi
+            echo "Intento $i: Esperando IP privada (20s)..."
+            sleep 20
+          done
 
-          if [ -z "$INTERNAL_IP" ]; then echo "No se pudo obtener la IP interna"; exit 1; fi
+          if [ -z "$INTERNAL_IP" ]; then 
+            echo "Error: No se obtuvo IP tras 4 minutos."
+            exit 1 
+          fi
+          
+          echo "IP detectada: $INTERNAL_IP. Actualizando APIM ${{ env.APIM_NAME }}..."
 
-          # Actualizamos el Backend del APIM para que apunte a esa IP interna
           az apim api update \
             --resource-group ${{ env.RG_NAME }} \
             --service-name ${{ env.APIM_NAME }} \
             --api-id tickets-api \
             --service-url "http://$INTERNAL_IP"
 
-      # 5. Base de Datos (sqlcmd)
+      # 5. Base de Datos (Estructura inicial)
       - name: Install sqlcmd and Create Table
         run: |
           curl https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
