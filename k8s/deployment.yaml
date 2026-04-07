@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: support-app
+  name: support-app-deployment
   labels:
     app: support-app
 spec:
@@ -15,33 +15,22 @@ spec:
         app: support-app
     spec:
       containers:
-      - name: support-app-container
-        # La imagen se actualizará automáticamente en el pipeline de GitHub Actions
-        image: acrcarlos69lm.azurecr.io/support-app:latest 
+      - name: support-app
+        # Reemplaza con tu imagen real del ACR
+        image: acrcarlos69lmv8.azurecr.io/support-app:latest
         ports:
         - containerPort: 3000
         env:
-        - name: DB_SERVER
-          value: "sql-server-tickets-carlos.database.windows.net"
-        - name: DB_NAME
-          value: "SupportDB"
         - name: DB_USER
           value: "sqladmin"
         - name: DB_PASSWORD
-          value: "TuPasswordSeguro123" # Reemplazado por sed en el pipeline
+          valueFrom:
+            secretKeyRef:
+              name: sql-secret
+              key: password
+        - name: DB_SERVER
+          value: "sqlserver-carlos-lab.database.windows.net"
+        - name: DB_NAME
+          value: "SupportDB"
         - name: PORT
           value: "3000"
-        
-        # Monitoreo de salud del contenedor
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 3000
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 3000
-          initialDelaySeconds: 15
-          periodSeconds: 20

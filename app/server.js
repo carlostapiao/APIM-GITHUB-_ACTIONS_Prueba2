@@ -3,12 +3,10 @@ const sql = require('mssql');
 const path = require('path');
 const app = express();
 
-// Configuración para confiar en el Ingress/APIM
 app.set('trust proxy', true);
-
 app.use(express.json());
 
-// --- CONFIGURACIÓN DE BASE DE DATOS ---
+// --- Configuración de SQL Server ---
 const config = {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
@@ -16,45 +14,39 @@ const config = {
     database: process.env.DB_NAME,
     options: {
         encrypt: true,
-        trustServerCertificate: false 
-    },
-    pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000
+        trustServerCertificate: false
     }
 };
 
 const poolPromise = new sql.ConnectionPool(config)
     .connect()
     .then(pool => {
-        console.log('✅ Conectado a Azure SQL Server');
+        console.log('✅ Conexión exitosa a Azure SQL');
         return pool;
     })
     .catch(err => {
-        console.error('❌ Error de conexión a la DB:', err);
+        console.error('❌ Error de conexión SQL:', err);
         process.exit(1);
     });
 
-// --- LÓGICA DE RUTAS CON SOPORTE PARA PREFIJO /TICKETS ---
-const router = express.Router();
-
-// Servir archivos estáticos dentro del router
-router.use(express.static(path.join(__dirname, 'public')));
+// --- Manejo de Rutas y Archivos Estáticos ---
+// Esto permite que el CSS/JS cargue correctamente con el prefijo del APIM
+app.use('/tickets', express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // API: Obtener Tickets
-router.get('/api/tickets', async (req, res) => {
+app.get(['/api/tickets', '/tickets/api/tickets'], async (req, res) => {
     try {
         const pool = await poolPromise;
         const result = await pool.request().query("SELECT * FROM Tickets ORDER BY id DESC");
         res.json(result.recordset);
     } catch (err) {
-        res.status(500).send("Error al obtener tickets: " + err.message);
+        res.status(500).send(err.message);
     }
 });
 
 // API: Crear Ticket
-router.post('/api/tickets', async (req, res) => {
+app.post(['/api/tickets', '/tickets/api/tickets'], async (req, res) => {
     try {
         const { usuario, asunto, prioridad } = req.body;
         const pool = await poolPromise;
@@ -65,22 +57,16 @@ router.post('/api/tickets', async (req, res) => {
             .query("INSERT INTO Tickets (usuario, asunto, prioridad, estado) VALUES (@u, @a, @p, 'Abierto')");
         res.sendStatus(201);
     } catch (err) {
-        res.status(500).send("Error al guardar ticket: " + err.message);
+        res.status(500).send(err.message);
     }
 });
 
-// SPA Support: Enviar index.html para cualquier sub-ruta dentro de /tickets
-router.get('*', (req, res) => {
+// Servir la interfaz visual (Página Azul)
+app.get(['/', '/tickets', '/tickets/'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// --- VINCULAR RUTAS ---
-// Esto hace que la app responda en /tickets (para el APIM) y en / (para local/internos)
-app.use('/tickets', router);
-app.use('/', router);
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-    console.log(`Arquitectura: AKS Privado + APIM`);
+    console.log(`🚀 Servidor en puerto ${PORT}`);
 });

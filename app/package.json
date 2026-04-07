@@ -1,7 +1,7 @@
 {
-  "name": "it-support-tickets",
+  "name": "it-support-system",
   "version": "1.0.0",
-  "description": "Sistema de Tickets - Lab Carlos Tapia",
+  "description": "Sistema de Tickets - Lab 21",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

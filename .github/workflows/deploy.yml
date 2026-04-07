@@ -1,144 +1,84 @@
-name: 'CI/CD - IT Support System v8'
+name: "CI/CD - IT Support System v8"
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches:
+      - main
 
 jobs:
   deploy:
+    name: "Deploy"
     runs-on: ubuntu-latest
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: "e690edad-0257-4dec-b4c9-08e163433edb"
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      
-      # --- VARIABLES DE INFRAESTRUCTURA ---
-      RG_NAME: "rg-k8s-lab"
-      AKS_NAME: "aks-lab"
-      APIM_NAME: "apimcarlos69lmv8"
-      ACR_NAME: "acrcarlos69lm"
-      # ------------------------------------
-      
-      DB_SERVER_NAME: "sql-server-tickets-carlos"
-      DB_NAME: "SupportDB"
-      DB_USER: "sqladmin"
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: "Checkout Code"
+        uses: actions/checkout@v3
 
-      - name: Azure Login
-        uses: azure/login@v2
+      # --- 1. TERRAFORM ---
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v2
+
+      - name: "Terraform Init"
+        run: terraform init
+
+      - name: "Terraform Apply"
+        run: |
+          terraform apply -auto-approve \
+            -var="subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
+            -var="db_password=${{ secrets.DB_PASSWORD }}"
+
+      # --- 2. AZURE LOGIN & ACR ---
+      - name: "Azure Login"
+        uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 1. Infraestructura con Terraform
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.0
-
-      - name: Terraform Init & Apply
+      - name: "Build and Push to ACR"
         run: |
-          terraform init
-          terraform apply -auto-approve -var="db_password=${{ secrets.DB_PASSWORD }}"
+          az acr login --name acrcarlos69lmv8
+          docker build -t acrcarlos69lmv8.azurecr.io/support-app:latest ./app
+          docker push acrcarlos69lmv8.azurecr.io/support-app:latest
 
-      # 2. Imagen de Aplicación
-      - name: Login to ACR
-        uses: azure/docker-login@v1
+      # --- 3. DATABASE SETUP (SQL) ---
+      - name: "Setup Database Table"
+        uses: azure/sql-action@v2
         with:
-          login-server: ${{ env.ACR_NAME }}.azurecr.io
-          username: ${{ secrets.AZURE_CLIENT_ID }}
-          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+          connection-string: "Server=tcp:sqlserver-carlos-lab.database.windows.net,1433;Initial Catalog=SupportDB;Persist Security Info=False;User ID=sqladmin;Password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+          sql-file: "./scripts/init.sql"
 
-      - name: Build & Push App
-        uses: docker/build-push-action@v5
-        with:
-          context: ./app
-          push: true
-          tags: ${{ env.ACR_NAME }}.azurecr.io/support-app:${{ github.sha }}
-
-      # 3. Kubernetes (Despliegue Interno Privado)
-      - name: Kubernetes Deploy
+      # --- 4. KUBERNETES DEPLOY ---
+      - name: "Get AKS Credentials"
         run: |
-          # 1. Preparar manifiestos
-          sed -i 's|${{ env.ACR_NAME }}.azurecr.io/support-app:latest|${{ env.ACR_NAME }}.azurecr.io/support-app:${{ github.sha }}|g' k8s/deployment.yaml
-          sed -i 's|TuPasswordSeguro123|${{ secrets.DB_PASSWORD }}|g' k8s/deployment.yaml
+          az aks get-credentials --resource-group rg-k8s-lab --name aks-lab --overwrite-existing
+
+      - name: "Create SQL Secret"
+        run: |
+          kubectl delete secret sql-secret --ignore-not-found
+          kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}'
+
+      - name: "Deploy to AKS"
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl apply -f k8s/ingress.yaml
+
+      # --- 5. SYNC APIM WITH AKS INTERNAL IP ---
+      - name: "Sync Internal IP with APIM"
+        run: |
+          # Obtenemos la IP privada del Ingress Controller para que el APIM sepa a dónde ir
+          INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "La IP del Ingress es: $INGRESS_IP"
           
-          # 2. Instalar Ingress Nginx (CORREGIDO: Anotación con valor explícito y wait)
-          az aks command invoke \
-            --resource-group ${{ env.RG_NAME }} \
-            --name ${{ env.AKS_NAME }} \
-            --command "helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update && helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-basic --create-namespace --set controller.service.annotations.\"service\.beta\.kubernetes\.io/azure-load-balancer-internal\"=\"true\" --wait"
-
-          # 3. Aplicar manifiestos de la App
-          az aks command invoke \
-            --resource-group ${{ env.RG_NAME }} \
-            --name ${{ env.AKS_NAME }} \
-            --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml" \
-            --file k8s/deployment.yaml \
-            --file k8s/service.yaml \
-            --file k8s/ingress.yaml
-
-      # 4. Sincronizar IP Privada con APIM
-      - name: Sync Internal IP with APIM
-        run: |
-          echo "Buscando IP privada del Ingress..."
-          INTERNAL_IP=""
-          # Aumentamos intentos y el sleep para dar tiempo a Azure
-          for i in {1..20}; do
-            RAW_OUTPUT=$(az aks command invoke \
-              --resource-group ${{ env.RG_NAME }} \
-              --name ${{ env.AKS_NAME }} \
-              --command "kubectl get svc -n ingress-basic ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
-            
-            INTERNAL_IP=$(echo $RAW_OUTPUT | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" || true)
-            
-            if [ -n "$INTERNAL_IP" ]; then
-              break
-            fi
-            echo "Intento $i: IP interna aún no asignada. Reintentando en 25s..."
-            sleep 25
-          done
-
-          if [ -z "$INTERNAL_IP" ]; then 
-            # Si falla, mostramos el estado del servicio para debug
-            az aks command invoke --resource-group ${{ env.RG_NAME }} --name ${{ env.AKS_NAME }} --command "kubectl get svc -n ingress-basic"
-            echo "Error: No se obtuvo IP privada. Revisa si la subnet tiene IPs disponibles."
-            exit 1 
-          fi
-          
-          echo "IP Detectada: $INTERNAL_IP. Sincronizando con APIM..."
-
-          az apim api update \
-            --resource-group ${{ env.RG_NAME }} \
-            --service-name ${{ env.APIM_NAME }} \
+          # Actualizamos el Backend del APIM
+          az apim api update --resource-group rg-k8s-lab \
+            --service-name apimcarlos69lmv8 \
             --api-id tickets-api \
-            --service-url "http://$INTERNAL_IP"
+            --service-url "http://$INGRESS_IP/tickets"
 
-      # 5. Configuración de Base de Datos
-      - name: Install sqlcmd and Create Table
-        run: |
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
-          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
-          export PATH="$PATH:/opt/mssql-tools18/bin"
-          
-          sqlcmd -S "${{ env.DB_SERVER_NAME }}.database.windows.net" \
-                 -d "${{ env.DB_NAME }}" \
-                 -U "${{ env.DB_USER }}" \
-                 -P "${{ secrets.DB_PASSWORD }}" \
-                 -C \
-                 -Q "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Tickets' AND xtype='U') 
-                     CREATE TABLE Tickets (
-                        id INT PRIMARY KEY IDENTITY(1,1),
-                        usuario NVARCHAR(100) NOT NULL,
-                        asunto NVARCHAR(255) NOT NULL,
-                        prioridad NVARCHAR(20),
-                        estado NVARCHAR(20) DEFAULT 'Abierto',
-                        fecha_creacion DATETIME DEFAULT GETDATE()
-                     );"
+      - name: "Check Deployment Status"
+        run: kubectl rollout status deployment/support-app-deployment

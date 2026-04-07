@@ -1,32 +1,46 @@
 variable "subscription_id" {
-  default = "e690edad-0257-4dec-b4c9-08e163433edb"
+  description = "ID de la suscripción de Azure"
+  type        = string
 }
 
 variable "location" {
-  default = "centralus"
+  description = "Región de Azure"
+  type        = string
+  default     = "East US"
 }
 
 variable "resource_group_name" {
-  default = "rg-k8s-lab"
-}
-
-variable "acr_name" {
-  default = "acrcarlos69lm"
+  description = "Nombre del grupo de recursos"
+  type        = string
+  default     = "rg-k8s-lab"
 }
 
 variable "aks_name" {
-  default = "aks-lab"
+  description = "Nombre del clúster AKS"
+  type        = string
+  default     = "aks-lab"
 }
 
 variable "apim_name" {
-  default = "apimcarlos69lmv8" 
+  description = "Nombre del servicio APIM"
+  type        = string
+  default     = "apimcarlos69lmv8"
+}
+
+variable "acr_name" {
+  description = "Nombre del Azure Container Registry"
+  type        = string
+  default     = "acrcarlos69lmv8"
 }
 
 variable "sql_server_name" {
-  default = "sql-server-tickets-carlos"
+  description = "Nombre del servidor SQL"
+  type        = string
+  default     = "sqlserver-carlos-lab"
 }
 
 variable "db_password" {
-  type      = string
-  sensitive = true
+  description = "Password para SQL Server"
+  type        = string
+  sensitive   = true
 }

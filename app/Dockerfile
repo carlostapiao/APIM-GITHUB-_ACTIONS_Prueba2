@@ -1,23 +1,20 @@
-# Usamos una imagen ligera de Node.js
+# Usar imagen oficial de Node ligera
 FROM node:18-slim
 
-# Crear directorio de la app
+# Crear directorio de trabajo
 WORKDIR /usr/src/app
 
-# Copiar archivos de dependencias primero (mejor uso de caché)
+# Copiar archivos de dependencias
 COPY package*.json ./
 
 # Instalar dependencias
-RUN npm install --only=production
+RUN npm install --production
 
-# Copiar el resto del código (incluyendo la carpeta public)
+# Copiar el resto del código (incluyendo la carpeta public/)
 COPY . .
 
-# Exponer el puerto que configuramos en el Deployment de K8s
+# Exponer el puerto de la aplicación
 EXPOSE 3000
 
-# Usuario no-root por seguridad
-USER node
-
-# Comando de arranque
-CMD [ "node", "server.js" ]
+# Comando para iniciar
+CMD [ "npm", "start" ]
