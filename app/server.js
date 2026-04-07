@@ -7,8 +7,8 @@ const app = express();
 app.set('trust proxy', true);
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
+// --- CONFIGURACIÓN DE BASE DE DATOS ---
 const config = {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
@@ -16,7 +16,7 @@ const config = {
     database: process.env.DB_NAME,
     options: {
         encrypt: true,
-        trustServerCertificate: false // Obligatorio para Azure SQL
+        trustServerCertificate: false 
     },
     pool: {
         max: 10,
@@ -25,7 +25,6 @@ const config = {
     }
 };
 
-// Crear un Pool de conexiones global
 const poolPromise = new sql.ConnectionPool(config)
     .connect()
     .then(pool => {
@@ -37,8 +36,14 @@ const poolPromise = new sql.ConnectionPool(config)
         process.exit(1);
     });
 
+// --- LÓGICA DE RUTAS CON SOPORTE PARA PREFIJO /TICKETS ---
+const router = express.Router();
+
+// Servir archivos estáticos dentro del router
+router.use(express.static(path.join(__dirname, 'public')));
+
 // API: Obtener Tickets
-app.get('/api/tickets', async (req, res) => {
+router.get('/api/tickets', async (req, res) => {
     try {
         const pool = await poolPromise;
         const result = await pool.request().query("SELECT * FROM Tickets ORDER BY id DESC");
@@ -49,7 +54,7 @@ app.get('/api/tickets', async (req, res) => {
 });
 
 // API: Crear Ticket
-app.post('/api/tickets', async (req, res) => {
+router.post('/api/tickets', async (req, res) => {
     try {
         const { usuario, asunto, prioridad } = req.body;
         const pool = await poolPromise;
@@ -64,10 +69,15 @@ app.post('/api/tickets', async (req, res) => {
     }
 });
 
-// SPA Support: Enviar index.html para cualquier otra ruta
-app.get('*', (req, res) => {
+// SPA Support: Enviar index.html para cualquier sub-ruta dentro de /tickets
+router.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
+// --- VINCULAR RUTAS ---
+// Esto hace que la app responda en /tickets (para el APIM) y en / (para local/internos)
+app.use('/tickets', router);
+app.use('/', router);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

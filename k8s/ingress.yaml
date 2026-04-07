@@ -5,16 +5,21 @@ metadata:
   namespace: default
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    # Esto limpia el prefijo /tickets para que la app vea la raíz /
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    # Eliminamos el rewrite-target porque ahora el servidor Express 
+    # maneja el prefijo /tickets directamente.
 spec:
   ingressClassName: nginx
   rules:
-  output:
   - http:
       paths:
-      - path: /tickets(/|$)(.*)
+      - path: /tickets
+        pathType: Prefix
+        backend:
+          service:
+            name: support-app-service
+            port:
+              number: 80
+      - path: /
         pathType: Prefix
         backend:
           service:
