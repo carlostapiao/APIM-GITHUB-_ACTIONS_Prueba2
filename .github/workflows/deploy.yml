@@ -41,30 +41,44 @@ jobs:
           docker build -t acrcarlos69lmv8.azurecr.io/support-app:latest ./app
           docker push acrcarlos69lmv8.azurecr.io/support-app:latest
 
-      # --- 3. BASE DE DATOS (SQL) ---
+      # --- 3. BASE DE DATOS (CREACIÓN DEL SCRIPT + EJECUCIÓN) ---
+      - name: "Create SQL Script File"
+        run: |
+          mkdir -p scripts
+          echo "IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Tickets')
+          BEGIN
+              CREATE TABLE Tickets (
+                  id INT IDENTITY(1,1) PRIMARY KEY,
+                  usuario VARCHAR(100),
+                  asunto VARCHAR(255),
+                  prioridad VARCHAR(20),
+                  estado VARCHAR(20) DEFAULT 'Abierto'
+              );
+          END" > ./scripts/init.sql
+
       - name: "Setup Database Table"
         uses: azure/sql-action@v2
         with:
           connection-string: "Server=tcp:sqlserver-carlos-lab.database.windows.net,1433;Initial Catalog=SupportDB;User ID=sqladmin;Password=${{ secrets.DB_PASSWORD }};Encrypt=True;TrustServerCertificate=False;"
-          path: "./scripts/init.sql"
+          path: "./scripts/init.sql" # Ahora el archivo sí existirá aquí
           action: "Execute"
 
       # --- 4. DESPLIEGUE EN AKS PRIVADO ---
       - name: "Deploy to Private AKS"
         run: |
-          # A. Instalar/Actualizar Nginx Ingress Controller
+          # Instalar Ingress Controller
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
             --command "helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update && helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-nginx --create-namespace --set controller.service.annotations.\"service\.beta\.kubernetes\.io/azure-load-balancer-internal\"=\"true\""
 
-          # B. Crear secreto para la base de datos (Idempotente)
+          # Crear secreto de SQL
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
             --command "kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}' --dry-run=client -o yaml | kubectl apply -f -"
 
-          # C. Aplicar manifiestos de Kubernetes
+          # Aplicar manifiestos
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
@@ -76,10 +90,8 @@ jobs:
       # --- 5. CONFIGURACIÓN APIM (EXTENSIÓN + BACKEND + IP) ---
       - name: "Update APIM Connection (Solución Error 500)"
         run: |
-          # 0. Instalar la extensión necesaria para comandos de backend
           az extension add --name apim --yes
 
-          # 1. Obtener la IP privada del Ingress (Bucle de reintento)
           echo "🔍 Buscando IP privada del Ingress..."
           for i in {1..10}; do
             RAW_LOGS=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
@@ -93,12 +105,8 @@ jobs:
             sleep 30
           done
 
-          if [ -z "$INGRESS_IP" ]; then
-            echo "❌ Error: No se obtuvo IP del Ingress."
-            exit 1
-          fi
+          if [ -z "$INGRESS_IP" ]; then exit 1; fi
 
-          # 2. Configurar Backend en APIM (Evita el Error 500 de SSL/Confianza)
           echo "🚀 Configurando Backend en apimcarlos69lmv9..."
           az apim backend create \
             --resource-group rg-k8s-lab \
@@ -114,7 +122,6 @@ jobs:
             --backend-id aks-backend \
             --url "http://$INGRESS_IP/"
 
-          # 3. Sincronizar la API con el nuevo Service URL
           az apim api update \
             --resource-group rg-k8s-lab \
             --service-name apimcarlos69lmv9 \
