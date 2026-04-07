@@ -20,7 +20,7 @@ resource "azurerm_resource_group" "rg" {
   location = var.location
 }
 
-# --- Redes ---
+# --- 1. Redes ---
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-tickets-lab"
   address_space       = ["10.0.0.0/16"]
@@ -42,7 +42,7 @@ resource "azurerm_subnet" "apim_subnet" {
   address_prefixes     = ["10.0.2.0/24"]
 }
 
-# --- Seguridad APIM (NSG) ---
+# --- 2. Seguridad APIM (NSG) ---
 resource "azurerm_network_security_group" "apim_nsg" {
   name                = "nsg-apim"
   location            = azurerm_resource_group.rg.location
@@ -66,7 +66,7 @@ resource "azurerm_subnet_network_security_group_association" "apim_nsg_assoc" {
   network_security_group_id = azurerm_network_security_group.apim_nsg.id
 }
 
-# --- AKS (Privado) ---
+# --- 3. AKS (Privado) ---
 resource "azurerm_kubernetes_cluster" "aks" {
   name                    = var.aks_name
   location                = azurerm_resource_group.rg.location
@@ -91,19 +91,31 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 }
 
-# --- Otros Recursos ---
+# --- 4. PERMISOS CRÍTICOS (Role Assignments) ---
+
+# Permiso para que AKS pueda sacar imágenes del ACR
+resource "azurerm_role_assignment" "aks_acr" {
+  principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
+  role_definition_name             = "AcrPull"
+  scope                            = azurerm_container_registry.acr.id
+  skip_service_principal_aad_check = true
+}
+
+# SOLUCIÓN AL EXTERNAL-IP PENDING: 
+# Permiso para que el AKS pueda gestionar IPs en la VNET
+resource "azurerm_role_assignment" "aks_network" {
+  scope                = azurerm_virtual_network.vnet.id
+  role_definition_name = "Network Contributor"
+  principal_id         = azurerm_kubernetes_cluster.aks.identity[0].principal_id
+}
+
+# --- 5. Otros Recursos ---
 resource "azurerm_container_registry" "acr" {
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   sku                 = "Basic"
   admin_enabled       = true
-}
-
-resource "azurerm_role_assignment" "aks_acr" {
-  principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
-  role_definition_name             = "AcrPull"
-  scope                            = azurerm_container_registry.acr.id
 }
 
 resource "azurerm_mssql_server" "sql" {
@@ -128,7 +140,7 @@ resource "azurerm_mssql_firewall_rule" "sql_fw" {
   end_ip_address   = "0.0.0.0"
 }
 
-# --- APIM v8 ---
+# --- 6. APIM v8 ---
 resource "azurerm_api_management" "apim" {
   name                = var.apim_name
   location            = azurerm_resource_group.rg.location
