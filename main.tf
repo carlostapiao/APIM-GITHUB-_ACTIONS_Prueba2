@@ -193,3 +193,17 @@ resource "azurerm_container_registry" "acr" {
   sku                 = "Basic"
   admin_enabled       = true
 }
+
+# --- NUEVO: Permiso para que el AKS pueda crear el Load Balancer Interno ---
+resource "azurerm_role_assignment" "aks_network" {
+  scope                = azurerm_resource_group.rg.id
+  role_definition_name = "Network Contributor"
+  principal_id         = azurerm_kubernetes_cluster.aks.identity[0].principal_id
+}
+
+# También necesitamos permiso para la identidad gestionada del Agente (Kubelet)
+resource "azurerm_role_assignment" "aks_kubelet_network" {
+  scope                = azurerm_resource_group.rg.id
+  role_definition_name = "Network Contributor"
+  principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
+}
