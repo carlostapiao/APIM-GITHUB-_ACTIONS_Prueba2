@@ -1,4 +1,4 @@
-name: "CI/CD - IT Support System v14"
+name: "CI/CD - IT Support System v15"
 
 on:
   push:
@@ -43,8 +43,8 @@ jobs:
           docker build -t acrcarlos69lmv8.azurecr.io/support-app:latest ./app
           docker push acrcarlos69lmv8.azurecr.io/support-app:latest
 
-      # --- 3. SQL AUTOMÁTICO ---
-      - name: "Create SQL Script and Execute"
+      # --- 3. BASE DE DATOS (AUTOMÁTICA) ---
+      - name: "Create SQL Script"
         run: |
           mkdir -p scripts
           echo "IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Tickets')
@@ -65,16 +65,22 @@ jobs:
           path: "./scripts/init.sql"
           action: "Execute"
 
-      # --- 4. DESPLIEGUE EN AKS PRIVADO ---
+      # --- 4. DESPLIEGUE EN AKS PRIVADO (CON INGRESS AUTO-INSTALL) ---
       - name: "Deploy to Private AKS"
         run: |
-          # A. Crear secreto para la base de datos
+          # A. Instalar Ingress Controller (Necesario para obtener IP privada)
+          az aks command invoke \
+            --resource-group rg-k8s-lab \
+            --name aks-lab \
+            --command "helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update && helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-nginx --create-namespace --set controller.service.annotations.\"service\.beta\.kubernetes\.io/azure-load-balancer-internal\"=\"true\""
+
+          # B. Crear secreto para la base de datos
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
             --command "kubectl delete secret sql-secret --ignore-not-found && kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}'"
 
-          # B. Aplicar archivos de Kubernetes
+          # C. Aplicar archivos de Kubernetes (Enviados uno por uno)
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
@@ -83,25 +89,26 @@ jobs:
             --file k8s/ingress.yaml \
             --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml"
 
-      # --- 5. SINCRONIZACIÓN APIM -> AKS (ESTO ARREGLA EL GET/POST) ---
+      # --- 5. SINCRONIZACIÓN FINAL APIM -> AKS ---
       - name: "Update APIM Backend with Ingress IP"
         run: |
-          # 1. Obtenemos la IP privada del LoadBalancer del Ingress Controller
-          # Usamos un comando más robusto para filtrar la IP en el log de Azure
+          # Esperamos 60 segundos para dar tiempo a Azure a asignar la IP privada al Ingress
+          echo "Esperando asignación de IP privada..."
+          sleep 60 
+          
           RAW_LOGS=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
           
-          # Extraemos solo la dirección IP del JSON de respuesta de logs
+          # Extraer IP de los logs de Azure
           INGRESS_IP=$(echo $RAW_LOGS | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -n 1)
           
           if [ -z "$INGRESS_IP" ]; then
-            echo "❌ Error: No se pudo obtener la IP del Ingress. El APIM no funcionará."
+            echo "❌ Error: Azure aún no asigna IP al Ingress. Intenta ejecutar de nuevo el job en unos minutos."
             exit 1
           fi
 
-          echo "✅ IP Detectada: $INGRESS_IP. Actualizando APIM..."
+          echo "✅ IP Privada Detectada: $INGRESS_IP. Actualizando APIM..."
 
-          # 2. Actualizamos el servicio URL de la API en el APIM
-          # Importante: El backend debe apuntar a la IP del Ingress en el puerto 80
+          # Actualizamos el Backend del APIM para que apunte al AKS
           az apim api update \
             --resource-group rg-k8s-lab \
             --service-name apimcarlos69lmv8 \
