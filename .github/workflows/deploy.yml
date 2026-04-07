@@ -49,7 +49,9 @@ jobs:
         uses: azure/sql-action@v2
         with:
           connection-string: "Server=tcp:sqlserver-carlos-lab.database.windows.net,1433;Initial Catalog=SupportDB;Persist Security Info=False;User ID=sqladmin;Password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
-          sql-file: "./scripts/init.sql"
+          # Cambiamos 'sql-file' por 'path'
+          path: "./scripts/init.sql"
+          action: "Execute" # Opcional, pero recomendado para v2
 
       # --- 4. KUBERNETES DEPLOY ---
       - name: "Get AKS Credentials"
