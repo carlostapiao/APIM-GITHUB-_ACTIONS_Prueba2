@@ -1,4 +1,4 @@
-name: 'CI/CD - IT Support System'
+name: 'CI/CD - IT Support System v8'
 
 on:
   push:
@@ -13,9 +13,14 @@ jobs:
       ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: "e690edad-0257-4dec-b4c9-08e163433edb"
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      
+      # --- VARIABLES DE INFRAESTRUCTURA ---
       RG_NAME: "rg-k8s-lab"
       AKS_NAME: "aks-lab"
-      APIM_NAME: "apimcarlos69lmv8" # <--- Sincronizado
+      APIM_NAME: "apimcarlos69lmv8"
+      ACR_NAME: "acrcarlos69lm"
+      # ------------------------------------
+      
       DB_SERVER_NAME: "sql-server-tickets-carlos"
       DB_NAME: "SupportDB"
       DB_USER: "sqladmin"
@@ -30,6 +35,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # 1. Infraestructura con Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -40,10 +46,11 @@ jobs:
           terraform init
           terraform apply -auto-approve -var="db_password=${{ secrets.DB_PASSWORD }}"
 
+      # 2. Imagen de Aplicación
       - name: Login to ACR
         uses: azure/docker-login@v1
         with:
-          login-server: acrcarlos69lm.azurecr.io
+          login-server: ${{ env.ACR_NAME }}.azurecr.io
           username: ${{ secrets.AZURE_CLIENT_ID }}
           password: ${{ secrets.AZURE_CLIENT_SECRET }}
 
@@ -52,41 +59,65 @@ jobs:
         with:
           context: ./app
           push: true
-          tags: acrcarlos69lm.azurecr.io/support-app:${{ github.sha }}
+          tags: ${{ env.ACR_NAME }}.azurecr.io/support-app:${{ github.sha }}
 
+      # 3. Kubernetes (Despliegue Interno Privado)
       - name: Kubernetes Deploy
         run: |
-          sed -i 's|acrcarlos69lm.azurecr.io/support-app:latest|acrcarlos69lm.azurecr.io/support-app:${{ github.sha }}|g' k8s/deployment.yaml
+          # 1. Preparar manifiestos con la versión correcta de la imagen y password de DB
+          sed -i 's|${{ env.ACR_NAME }}.azurecr.io/support-app:latest|${{ env.ACR_NAME }}.azurecr.io/support-app:${{ github.sha }}|g' k8s/deployment.yaml
           sed -i 's|TuPasswordSeguro123|${{ secrets.DB_PASSWORD }}|g' k8s/deployment.yaml
           
-          # Instalación interna de Nginx
+          # 2. Instalar/Actualizar Ingress Nginx (Interno)
           az aks command invoke \
             --resource-group ${{ env.RG_NAME }} \
             --name ${{ env.AKS_NAME }} \
             --command "helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update && helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-basic --create-namespace --set controller.service.annotations.\"service\.beta\.kubernetes\.io/azure-load-balancer-internal\"=true"
 
-          # Despliegue de manifiestos
+          # 3. Aplicar manifiestos de la App (Subiendo archivos explícitamente)
           az aks command invoke \
             --resource-group ${{ env.RG_NAME }} \
             --name ${{ env.AKS_NAME }} \
-            --command "kubectl apply -f k8s/" \
-            --file k8s/
+            --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml" \
+            --file k8s/deployment.yaml \
+            --file k8s/service.yaml \
+            --file k8s/ingress.yaml
 
+      # 4. Sincronizar IP Privada con APIM
       - name: Sync Internal IP with APIM
         run: |
-          echo "Buscando IP privada..."
+          echo "Buscando IP privada del Ingress..."
           INTERNAL_IP=""
-          for i in {1..12}; do
-            RAW_OUTPUT=$(az aks command invoke --resource-group ${{ env.RG_NAME }} --name ${{ env.AKS_NAME }} --command "kubectl get svc -n ingress-basic ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
+          for i in {1..15}; do
+            RAW_OUTPUT=$(az aks command invoke \
+              --resource-group ${{ env.RG_NAME }} \
+              --name ${{ env.AKS_NAME }} \
+              --command "kubectl get svc -n ingress-basic ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
+            
+            # Filtramos la IP del resultado
             INTERNAL_IP=$(echo $RAW_OUTPUT | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" || true)
-            if [ -n "$INTERNAL_IP" ]; then break; fi
+            
+            if [ -n "$INTERNAL_IP" ]; then
+              break
+            fi
+            echo "Intento $i: Esperando IP privada (20s)..."
             sleep 20
           done
-          
-          if [ -z "$INTERNAL_IP" ]; then exit 1; fi
-          
-          az apim api update --resource-group ${{ env.RG_NAME }} --service-name ${{ env.APIM_NAME }} --api-id tickets-api --service-url "http://$INTERNAL_IP"
 
+          if [ -z "$INTERNAL_IP" ]; then 
+            echo "Error: El balanceador no entregó IP privada tras 5 minutos."
+            exit 1 
+          fi
+          
+          echo "IP Detectada: $INTERNAL_IP. Actualizando Backend del APIM..."
+
+          az apim api update \
+            --resource-group ${{ env.RG_NAME }} \
+            --service-name ${{ env.APIM_NAME }} \
+            --api-id tickets-api \
+            --service-url "http://$INTERNAL_IP"
+
+      # 5. Configuración de Base de Datos
       - name: Install sqlcmd and Create Table
         run: |
           curl https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
@@ -94,4 +125,18 @@ jobs:
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
           export PATH="$PATH:/opt/mssql-tools18/bin"
-          sqlcmd -S "${{ env.DB_SERVER_NAME }}.database.windows.net" -d "${{ env.DB_NAME }}" -U "${{ env.DB_USER }}" -P "${{ secrets.DB_PASSWORD }}" -C -Q "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Tickets' AND xtype='U') CREATE TABLE Tickets (id INT PRIMARY KEY IDENTITY(1,1), usuario NVARCHAR(100) NOT NULL, asunto NVARCHAR(255) NOT NULL, prioridad NVARCHAR(20), estado NVARCHAR(20) DEFAULT 'Abierto', fecha_creacion DATETIME DEFAULT GETDATE());"
+          
+          sqlcmd -S "${{ env.DB_SERVER_NAME }}.database.windows.net" \
+                 -d "${{ env.DB_NAME }}" \
+                 -U "${{ env.DB_USER }}" \
+                 -P "${{ secrets.DB_PASSWORD }}" \
+                 -C \
+                 -Q "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Tickets' AND xtype='U') 
+                     CREATE TABLE Tickets (
+                        id INT PRIMARY KEY IDENTITY(1,1),
+                        usuario NVARCHAR(100) NOT NULL,
+                        asunto NVARCHAR(255) NOT NULL,
+                        prioridad NVARCHAR(20),
+                        estado NVARCHAR(20) DEFAULT 'Abierto',
+                        fecha_creacion DATETIME DEFAULT GETDATE()
+                     );"
