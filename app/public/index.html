@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- 
+      CRÍTICO: El APIM expone la app en /tickets. 
+      Esta base asegura que 'style.css' se busque en /tickets/style.css 
+    -->
+    <base href="/tickets/">
+    
+    <title>IT Support System | Lab 21</title>
+    
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body { 
+            background-color: #0d1117; 
+            color: #c9d1d9; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; 
+            padding: 40px;
+            max-width: 900px;
+            margin: auto;
+        }
+        h1 { border-bottom: 1px solid #30363d; padding-bottom: 10px; color: #58a6ff; }
+        section { background: #161b22; padding: 20px; border-radius: 8px; margin-bottom: 25px; border: 1px solid #30363d; }
+        
+        input, select, button { 
+            padding: 10px; margin: 5px 0; border-radius: 6px; 
+            border: 1px solid #30363d; background: #0d1117; color: white; width: 100%; box-sizing: border-box;
+        }
+        
+        button { 
+            background-color: #238636; border: none; font-weight: bold; cursor: pointer; margin-top: 10px;
+        }
+        button:hover { background-color: #2ea043; }
+        button:disabled { background-color: #23863680; cursor: not-allowed; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; background: #0d1117; }
+        th, td { border: 1px solid #30363d; padding: 12px; text-align: left; }
+        th { background-color: #161b22; color: #8b949e; }
+        
+        .prio-Alta { color: #ff7b72; font-weight: bold; }
+        .prio-Media { color: #d29922; }
+        .prio-Baja { color: #7ee787; }
+        .status-tag { background: #30363d; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <h1>IT Support System <small style="font-size: 0.5em; color: #8b949e;">Lab 21 - Private AKS</small></h1>
+    
+    <section>
+        <h2>Abrir Nuevo Ticket</h2>
+        <form id="ticketForm">
+            <input type="text" id="usuario" placeholder="Tu nombre de usuario" required>
+            <input type="text" id="asunto" placeholder="Describe el problema técnico" required>
+            <label for="prioridad" style="display:block; margin-top:10px; font-size: 0.9em; color: #8b949e;">Prioridad:</label>
+            <select id="prioridad">
+                <option value="Baja">Baja</option>
+                <option value="Media" selected>Media</option>
+                <option value="Alta">Alta</option>
+            </select>
+            <button type="submit" id="submitBtn">Crear Ticket en SQL Server</button>
+        </form>
+    </section>
+
+    <section>
+        <h2>Tickets Activos</h2>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Usuario</th>
+                        <th>Asunto</th>
+                        <th>Prioridad</th>
+                        <th>Estado</th>
+                    </tr>
+                </thead>
+                <tbody id="ticketTableBody">
+                    <tr><td colspan="5">Cargando registros desde el cluster...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <script src="script.js"></script>
+</body>
+</html>

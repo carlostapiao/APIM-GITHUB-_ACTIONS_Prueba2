@@ -1,0 +1,119 @@
+name: 'CI/CD - IT Support System (Private Mode)'
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: "e690edad-0257-4dec-b4c9-08e163433edb"
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      # Variables de nombres (ajusta según tus variables de Terraform)
+      RG_NAME: "tu-resource-group" # <--- AJUSTAR
+      AKS_NAME: "tu-aks-name"      # <--- AJUSTAR
+      APIM_NAME: "tu-apim-name"    # <--- AJUSTAR
+      DB_SERVER_NAME: "sql-server-tickets-carlos"
+      DB_NAME: "SupportDB"
+      DB_USER: "sqladmin"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 1. Infraestructura con Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init & Apply
+        run: |
+          terraform init
+          terraform apply -auto-approve -var="db_password=${{ secrets.DB_PASSWORD }}"
+
+      # 2. Imagen de Aplicación
+      - name: Login to ACR
+        uses: azure/docker-login@v1
+        with:
+          login-server: acrcarlos69lm.azurecr.io
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Build & Push App
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app
+          push: true
+          tags: acrcarlos69lm.azurecr.io/support-app:${{ github.sha }}
+
+      # 3. Kubernetes (USANDO COMMAND INVOKE POR SER PRIVADO)
+      - name: Kubernetes Deploy
+        run: |
+          # 1. Preparamos los archivos localmente (sed)
+          sed -i 's|acrcarlos69lm.azurecr.io/support-app:latest|acrcarlos69lm.azurecr.io/support-app:${{ github.sha }}|g' k8s/deployment.yaml
+          sed -i 's|TuPasswordSeguro123|${{ secrets.DB_PASSWORD }}|g' k8s/deployment.yaml
+          
+          # 2. Ejecutamos el despliegue DESDE Azure hacia el cluster privado
+          az aks command invoke \
+            --resource-group ${{ env.RG_NAME }} \
+            --name ${{ env.AKS_NAME }} \
+            --command "kubectl apply -f k8s/" \
+            --file k8s/
+
+      # 4. Sincronizar IP Privada del Ingress con APIM
+      - name: Sync Internal IP with APIM
+        run: |
+          # Obtenemos la IP que el Ingress tomó de la red interna
+          RAW_OUTPUT=$(az aks command invoke \
+            --resource-group ${{ env.RG_NAME }} \
+            --name ${{ env.AKS_NAME }} \
+            --command "kubectl get svc -n ingress-basic ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
+          
+          # Extraemos solo la IP del JSON de salida de Azure
+          INTERNAL_IP=$(echo $RAW_OUTPUT | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b")
+          
+          echo "La IP interna del Ingress es: $INTERNAL_IP"
+
+          if [ -z "$INTERNAL_IP" ]; then echo "No se pudo obtener la IP interna"; exit 1; fi
+
+          # Actualizamos el Backend del APIM para que apunte a esa IP interna
+          az apim api update \
+            --resource-group ${{ env.RG_NAME }} \
+            --service-name ${{ env.APIM_NAME }} \
+            --api-id tickets-api \
+            --service-url "http://$INTERNAL_IP"
+
+      # 5. Base de Datos (sqlcmd)
+      - name: Install sqlcmd and Create Table
+        run: |
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
+          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
+          export PATH="$PATH:/opt/mssql-tools18/bin"
+          
+          sqlcmd -S "${{ env.DB_SERVER_NAME }}.database.windows.net" \
+                 -d "${{ env.DB_NAME }}" \
+                 -U "${{ env.DB_USER }}" \
+                 -P "${{ secrets.DB_PASSWORD }}" \
+                 -C \
+                 -Q "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Tickets' AND xtype='U') 
+                     CREATE TABLE Tickets (
+                        id INT PRIMARY KEY IDENTITY(1,1),
+                        usuario NVARCHAR(100) NOT NULL,
+                        asunto NVARCHAR(255) NOT NULL,
+                        prioridad NVARCHAR(20),
+                        estado NVARCHAR(20) DEFAULT 'Abierto',
+                        fecha_creacion DATETIME DEFAULT GETDATE()
+                     );"

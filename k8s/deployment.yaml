@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: support-app
+  labels:
+    app: support-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: support-app
+  template:
+    metadata:
+      labels:
+        app: support-app
+    spec:
+      containers:
+      - name: support-app-container
+        # La imagen se actualizará automáticamente en el pipeline de GitHub Actions
+        image: acrcarlos69lm.azurecr.io/support-app:latest 
+        ports:
+        - containerPort: 3000
+        env:
+        - name: DB_SERVER
+          value: "sql-server-tickets-carlos.database.windows.net"
+        - name: DB_NAME
+          value: "SupportDB"
+        - name: DB_USER
+          value: "sqladmin"
+        - name: DB_PASSWORD
+          value: "TuPasswordSeguro123" # Reemplazado por sed en el pipeline
+        - name: PORT
+          value: "3000"
+        
+        # Monitoreo de salud del contenedor
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 20
