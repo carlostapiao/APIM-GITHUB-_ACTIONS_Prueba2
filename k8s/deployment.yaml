@@ -16,11 +16,14 @@ spec:
     spec:
       containers:
       - name: support-app
-        # Reemplaza con tu imagen real del ACR
         image: acrcarlos69lmv8.azurecr.io/support-app:latest
         ports:
         - containerPort: 3000
         env:
+        - name: DB_SERVER
+          value: "sqlserver-carlos-lab.database.windows.net"
+        - name: DB_NAME
+          value: "SupportDB"
         - name: DB_USER
           value: "sqladmin"
         - name: DB_PASSWORD
@@ -28,9 +31,3 @@ spec:
             secretKeyRef:
               name: sql-secret
               key: password
-        - name: DB_SERVER
-          value: "sqlserver-carlos-lab.database.windows.net"
-        - name: DB_NAME
-          value: "SupportDB"
-        - name: PORT
-          value: "3000"

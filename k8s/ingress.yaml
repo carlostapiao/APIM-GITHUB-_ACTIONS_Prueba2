@@ -2,27 +2,15 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: support-app-ingress
-  namespace: default
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    # Esta anotación limpia el prefijo /tickets para que la app vea la raíz / si es necesario,
-    # pero permite que los archivos estáticos se capturen en el grupo $2
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Forzamos a que use la IP privada de la red de Azure
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
 spec:
-  ingressClassName: nginx
   rules:
   - http:
       paths:
-      # Captura /tickets, /tickets/ y cualquier subruta como /tickets/css/style.css
-      - path: /tickets(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: support-app-service
-            port:
-              number: 80
-      # Opcional: permitir acceso directo por IP si es necesario
       - path: /
         pathType: Prefix
         backend:
