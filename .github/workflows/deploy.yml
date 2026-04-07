@@ -1,4 +1,4 @@
-name: "CI/CD - IT Support System v11"
+name: "CI/CD - IT Support System v12"
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
             -var="subscription_id=${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
             -var="db_password=${{ secrets.DB_PASSWORD }}"
 
-      # --- 2. PREPARAR CÓDIGO (DOCKER) ---
+      # --- 2. AZURE LOGIN Y DOCKER ---
       - name: "Azure Login"
         uses: azure/login@v1
         with:
@@ -44,7 +44,7 @@ jobs:
           docker push acrcarlos69lmv8.azurecr.io/support-app:latest
 
       # --- 3. BASE DE DATOS (AUTOMÁTICA) ---
-      - name: "Create SQL Script and Execute"
+      - name: "Create SQL Script"
         run: |
           mkdir -p scripts
           echo "IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Tickets')
@@ -58,7 +58,6 @@ jobs:
               );
           END" > ./scripts/init.sql
           
-        # Usamos la acción corregida con 'path'
       - name: "Setup Database Table"
         uses: azure/sql-action@v2
         with:
@@ -66,33 +65,35 @@ jobs:
           path: "./scripts/init.sql"
           action: "Execute"
 
-      # --- 4. DESPLIEGUE EN AKS (SOLUCIÓN CLÚSTER PRIVADO) ---
-      # Al ser privado, no usamos kubectl directo, usamos 'az aks command invoke'
+      # --- 4. DESPLIEGUE EN AKS PRIVADO ---
       - name: "Deploy to Private AKS via Command Invoke"
         run: |
-          # 1. Crear el secreto para la DB
+          # A. Crear secreto para la base de datos
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
             --command "kubectl delete secret sql-secret --ignore-not-found && kubectl create secret generic sql-secret --from-literal=password='${{ secrets.DB_PASSWORD }}'"
 
-          # 2. Aplicar los archivos de Kubernetes
-          # Nota: Enviamos los archivos al clúster para que los procese internamente
+          # B. Aplicar archivos de Kubernetes enviando la carpeta completa
+          # Nota: Al subir la carpeta 'k8s/', los archivos quedan en la raíz del entorno temporal
           az aks command invoke \
             --resource-group rg-k8s-lab \
             --name aks-lab \
-            --file k8s/deployment.yaml k8s/service.yaml k8s/ingress.yaml \
+            --file k8s/ \
             --command "kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml"
 
       # --- 5. CONFIGURACIÓN FINAL APIM ---
       - name: "Update APIM Backend"
         run: |
-          # Obtenemos la IP del Ingress de forma remota
+          # Obtenemos la IP del Ingress de forma remota y limpia
           INGRESS_IP=$(az aks command invoke --resource-group rg-k8s-lab --name aks-lab --command "kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'" --query "logs" -o tsv | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | head -n 1)
           
           if [ ! -z "$INGRESS_IP" ]; then
+            echo "Actualizando APIM con la IP: $INGRESS_IP"
             az apim api update --resource-group rg-k8s-lab \
               --service-name apimcarlos69lmv8 \
               --api-id tickets-api \
               --service-url "http://$INGRESS_IP/tickets"
+          else
+            echo "No se pudo recuperar la IP del Ingress. Revisa si ingress-nginx está instalado."
           fi
